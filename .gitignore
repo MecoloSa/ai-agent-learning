@@ -1,0 +1,26 @@
+# Secrets and local configuration
+.env
+.env.*
+
+# Python and uv
+__pycache__/
+*.py[cod]
+.venv/
+.uv-cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Runtime output
+*.log
+.agent_data/
+.agents_data/
+
+# IDE metadata
+.idea/
+
+# Pytest temporary output
+.pytest-tmp/
+
+# Local Codex collaboration instructions
+AGENTS.md
