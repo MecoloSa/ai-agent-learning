@@ -93,3 +93,7 @@ uv run python -m ai_agent.main --materials .\book --goal "深入理解资料并�
 `--output` 和 `RAG_DATA_DIR` 的相对路径始终基于包含 `pyproject.toml` 的项目根目录解析，不受终端或 IDE 当前工作目录影响。默认计划输出到 `./plans/study_plan.md`，RAG 索引写入 `./.agents_data/rag`；传入绝对路径时仍使用指定位置。
 
 默认情况下，即使使用 `-v` 也不会打印完整向量、资料正文或完整模型消息。仅在确需排查提示词内容时临时设置 `LOG_PAYLOADS=true`；日志只输出受 `LOG_PREVIEW_CHARS` 限制的预览，但仍可能包含资料片段，调试完成后应恢复为 `false`。
+
+## 开发协作
+
+项目的分支约定、日常提交、同步、合并、冲突处理和发布流程参见 [Git 与 GitHub 分支工作流操作手册](../../docs/git-workflow.md)。
