@@ -115,6 +115,9 @@ BASE_TOOLS: list[BaseTool] = [
 
 def build_retrieve_learning_context_tool(
     root_dir: str,
+    *,
+    max_queries_per_call: int | None = None,
+    max_context_chars: int | None = None,
 ) -> BaseTool:
     """创建一个绑定资料目录的多query语义检索工具。
 
@@ -124,10 +127,23 @@ def build_retrieve_learning_context_tool(
     2. 是否需要读取命中块相邻的一个chunk。
 
     这比让模型传入任意root_dir更安全，也避免路径参数生成错误。
+    交互模式可以传入独立配置，避免一次普通问答加载过多证据。
     """
     settings = get_settings()
     resolved_root = str(Path(root_dir).resolve())
 
+    # 默认保持现有规划流程不变，交互模式创建工具时，会传入 INTERACTIEIVE_* 配置
+    effective_query_limit = (
+        max_queries_per_call
+        if max_queries_per_call is not None
+        else settings.plan_max_queries_per_tool_call
+    )
+
+    effective_context_limit = (
+        max_context_chars
+        if max_context_chars is not None
+        else max(1, settings.rag_max_context_chars // 2)
+    )
     # 延迟创建RAG实例：
     # 如果规划模型认为初始证据已经充分并且不调用工具，
     # 就不会产生额外的索引同步和Embedding初始化开销。
@@ -167,7 +183,7 @@ def build_retrieve_learning_context_tool(
         if not normalized_queries:
             return "检索未执行：queries中没有有效查询。"
 
-        query_limit = settings.plan_max_queries_per_tool_call
+        query_limit = effective_query_limit
         original_query_count = len(normalized_queries)
         limit_notice = ""
 
@@ -256,10 +272,8 @@ def build_retrieve_learning_context_tool(
 
             # 单次补充检索最多使用总RAG预算的一半，
             # 防止Agent连续调用时工具结果无限累积。
-            max_context_chars=max(
-                1,
-                settings.rag_max_context_chars // 2,
-            ),
+            # 不同场景使用不同预算。
+            max_context_chars=effective_context_limit,
         )
 
         logger.info(

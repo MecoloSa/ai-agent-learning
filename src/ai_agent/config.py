@@ -87,6 +87,18 @@ class Settings:
     # 每次工具调用允许同时提交的query数量。
     # 让模型集中表达当前证据缺口，减少“一条query调用一次”的低效行为。
     plan_max_queries_per_tool_call: int
+    # 每轮用户对话最多允许执行多少次补充检索。
+    # 默认2次，通过一次提交多条query控制成本；
+    # 后续评测发现一次检索经常无法解决问题时，再调整为2。
+    interactive_max_retrieval_calls: int
+
+    # 交互检索每次最多提交的query数量。
+    # 交互问题通常比初始规划更集中，因此建议小于规划阶段。
+    interactive_max_queries_per_tool_call: int
+
+    # 单次交互工具结果允许返回的最大字符数。
+    # 该预算只限制临时检索证据，不限制最终自然语言回答。
+    interactive_retrieval_max_context_chars: int
 
     material_snippet_file_limit: int
     material_snippet_max_chars: int
@@ -147,6 +159,21 @@ def get_settings() -> Settings:
         plan_max_queries_per_tool_call=_env_int(
             "PLAN_MAX_QUERIES_PER_TOOL_CALL",
             6,
+            minimum=1,
+        ),
+        interactive_max_retrieval_calls=_env_int(
+            "INTERACTIVE_MAX_RETRIEVAL_CALLS",
+            2,
+            minimum=1,
+        ),
+        interactive_max_queries_per_tool_call=_env_int(
+            "INTERACTIVE_MAX_QUERIES_PER_TOOL_CALL",
+            3,
+            minimum=1,
+        ),
+        interactive_retrieval_max_context_chars=_env_int(
+            "INTERACTIVE_RETRIEVAL_MAX_CONTEXT_CHARS",
+            32_000,
             minimum=1,
         ),
         material_snippet_file_limit=_env_int(
