@@ -1,0 +1,3 @@
+{"case_id":"hello_locate_intro","relative_path":"Hello-Agents-V1.0.3-20260717.pdf","page":5,"expected_pdf_success":true,"request_style":"locate","topic":"查找教程开篇对“第五部分：毕业设计及未来展望（第十六章）”的介绍，核对其中要求学习者构建什么毕业设计，引用该介绍中的原文。"}
+{"case_id":"hello_overview_part4","relative_path":"Hello-Agents-V1.0.3-20260717.pdf","page":4,"expected_pdf_success":true,"request_style":"locate","topic":"查找教程开篇对“第四部分：综合案例进阶”的介绍，核对其中列举了哪三类实践应用，并引用原文。"}
+{"case_id":"depth_eval_toc","relative_path":"AI-Agents-in-Depth-zh-CN.pdf","page":5,"expected_pdf_success":true,"request_style":"locate","topic":"查找本书目录中的“6.5.2 失败归因：从整条轨迹定位首个错误”条目，核对目录给出的印刷页码，并引用该条目。"}

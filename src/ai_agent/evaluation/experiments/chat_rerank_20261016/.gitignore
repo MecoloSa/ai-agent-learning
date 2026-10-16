@@ -1,0 +1,4 @@
+# 教材候选正文仅保存在本机，不随实验代码提交。
+inputs.local.json
+__pycache__/
+.pytest_cache/

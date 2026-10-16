@@ -7,6 +7,7 @@ import os
 
 from langchain_community.embeddings import DashScopeEmbeddings
 from langchain_core.embeddings import Embeddings
+from .network import SessionEmbeddingClient, get_ipv4_embedding_session
 
 logger = logging.getLogger("ai_agent.embeddings")
 
@@ -26,6 +27,7 @@ class BatchedDashScopeEmbeddings(Embeddings):
             api_key: str,
             batch_size: int,
             max_retries: int,
+            force_ipv4: bool = False,
     ) -> None:
         if not 1 <= batch_size <= DASHSCOPE_MAX_BATCH_SIZE:
             raise ValueError(
@@ -42,6 +44,12 @@ class BatchedDashScopeEmbeddings(Embeddings):
             dashscope_api_key=api_key,
             max_retries=max_retries,
         )
+        if force_ipv4:
+            # 只替换本客户端的传输 session；query/document 编码与重试不变。
+            self.client.client = SessionEmbeddingClient(
+                self.client.client, get_ipv4_embedding_session()
+            )
+            logger.debug("Embedding 连接策略：IPv4（API_FORCE_IPV4=true）")
 
     def embed_documents(
         self,

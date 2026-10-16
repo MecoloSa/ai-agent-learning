@@ -1,0 +1,3 @@
+{"case_id":"hello_explicit","relative_path":"Hello-Agents-V1.0.3-20260717.pdf","page":5,"expected_pdf_success":true,"request_style":"explicit"}
+{"case_id":"depth_autonomous","relative_path":"AI-Agents-in-Depth-zh-CN.pdf","page":5,"expected_pdf_success":true,"request_style":"autonomous"}
+{"case_id":"missing_pdf","relative_path":"missing_pdf_probe_731.pdf","page":1,"expected_pdf_success":false,"request_style":"explicit"}

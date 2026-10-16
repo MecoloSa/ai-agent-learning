@@ -1,0 +1,2 @@
+{"case_id":"goal-alignment-understand-001","material_dir":"src/ai_agent/eval/ai_agent_book","learning_goal":"基于资料，为初学者制定两天的 Function Calling 学习计划。理解模型生成工具调用、应用执行工具、工具结果回传与结束的关系。仅要求阅读与概念理解，不编写或运行代码，不安排编程项目或运行测试；可以用简短解释、流程示意或口头自检作为完成标志。不要要求输出模型私有思维链。","days":2}
+{"case_id":"goal-alignment-practice-001","material_dir":"src/ai_agent/eval/ai_agent_book","learning_goal":"基于资料，为初学者制定两天的 Function Calling 学习计划。理解模型生成工具调用、应用执行工具、工具结果回传与结束的关系，并安排实现一个最小工具调用示例的实践。提供必要的准备条件、具体步骤和结果检查方法，覆盖工具结果回传及无工具调用时结束。区分预期结果与实际执行结果；本次只制定计划，不声称实践已经完成。不要求输出模型私有思维链。","days":2}

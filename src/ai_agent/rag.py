@@ -7,6 +7,7 @@ import json
 import logging
 import math
 from pathlib import Path
+import time
 
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
@@ -15,11 +16,89 @@ from pypdf import PdfReader
 
 from .config import create_embeddings, get_settings
 from .materials import iter_material_files
+from .reranking import rerank_candidates, configured_rerank_options
+from .lexical_retrieval import CharBigramBM25
+from .retrieval_fusion import fuse_rrf_candidates
 
 logger = logging.getLogger("ai_agent.rag")
 
 class RAGError(RuntimeError):
     """PDF解析、索引构建或检索失败。"""
+
+def _rerank_candidate_pairs(
+    query: str,
+    candidates: list[tuple[Document, float]],
+    *,
+    min_score: float,
+) -> list[tuple[Document, float]]:
+    """重排合格候选，保留原始对象和向量分数；失败返回原顺序。"""
+    settings = get_settings()
+    pool = [
+        (doc, score)
+        for doc, score in candidates
+        if score >= min_score
+    ][:settings.rag_rerank_candidate_limit]
+
+    if len(pool) < 2:
+        return candidates
+
+    started = time.perf_counter()
+    try:
+        outcome = rerank_candidates(
+            query,
+            [doc for doc, _ in pool],
+            **configured_rerank_options(settings),
+        )
+
+        def key(doc: Document) -> tuple[str, int]:
+            return (
+                str(doc.metadata["source"]),
+                int(doc.metadata["chunk_index"]),
+            )
+
+        by_key = {key(doc): (doc, score) for doc, score in pool}
+        returned_keys = [key(doc) for doc in outcome.documents]
+        if (
+            len(by_key) != len(pool)
+            or len(returned_keys) != len(pool)
+            or set(returned_keys) != set(by_key)
+        ):
+            raise ValueError("重排结果与候选位置不一致")
+
+        ordered = [by_key[item] for item in returned_keys]
+
+        # 重排客户端返回副本，这里仍使用原 Document：
+        # 现有审计记录按对象身份关联，直接换对象会破坏过滤原因记录。
+        # 向量分数不被重排分数覆盖，两者不是同一种分数。
+        for (original, _), ranked in zip(ordered, outcome.documents):
+            original.metadata.pop("rerank_score", None)
+            for field in ("rerank_score", "rerank_rank", "rerank_backend", "rerank_model"):
+                if field in ranked.metadata:
+                    original.metadata[field] = ranked.metadata[field]
+
+        pool_ids = {id(doc) for doc, _ in pool}
+        remaining = [
+            (doc, score)
+            for doc, score in candidates
+            if id(doc) not in pool_ids
+        ]
+    except Exception as exc:
+        # 不记录异常全文，避免接口错误泄露配置。
+        # 回退保留完整原候选，而不是仅保留送去重排的前16个。
+        logger.warning(
+            "重排失败，回退向量排序：error_type=%s",
+            type(exc).__name__,
+        )
+        return candidates
+
+    logger.debug(
+        "重排成功：backend=%s candidates=%d elapsed_ms=%d tokens=%s",
+        settings.rag_rerank_backend,
+        len(pool),
+        round((time.perf_counter() - started) * 1000),
+        outcome.total_tokens,
+    )
+    return ordered + remaining
 
 def needs_rag(root_dir: str) -> bool:
     """路由判断：单文件、总语料规模或 PDF 任意一條件滿足即走 RAG"""
@@ -261,6 +340,10 @@ class LearningRAG:
         self.persist_dir.mkdir(parents=True, exist_ok=True)
         # 再在下面新建 manifest 文件（保存 相对文件路径 和 当前文件内容哈希）
         self.manifest_path = self.persist_dir / "manifest.json"
+
+        # 按当前 LearningRAG 实例隔离，不同资料目录不会共享关键词缓存。
+        # 延迟构建：向量基线不使用关键词检索时，不增加全库正文读取。
+        self._lexical_index: CharBigramBM25 | None = None
         # 向量库持久化到磁盘 sha/chroma
         # 只有文档和问题使用相同的向量模型，它们才能在同一向量空间中比较相似度
         self.store = Chroma(
@@ -354,7 +437,7 @@ class LearningRAG:
             total_budget=max_chars,
         )
 
-        logger.info(
+        logger.debug(
             "Overview预算分配：total=%d files=%d budgets=%s",
             max_chars,
             len(file_budgets),
@@ -430,8 +513,22 @@ class LearningRAG:
             for path in iter_material_files(self.root)
             if path.suffix.lower() != ".py"
         }
-        changed = {name for name, digest in current.items() if old.get(name) != digest}
+        changed = {
+            name
+            for name, digest in current.items()
+            if old.get(name) != digest
+        }
         deleted = set(old) - set(current)
+
+        if changed or deleted:
+            # 必须在修改向量库前失效：
+            # 即使后续更新失败，也不能继续提供旧关键词结果。
+            self._lexical_index = None
+            logger.debug(
+                "关键词索引失效：changed=%d deleted=%d",
+                len(changed),
+                len(deleted),
+            )
 
         # | 表示并集
         for source in sorted(changed | deleted):
@@ -471,6 +568,206 @@ class LearningRAG:
         return {"changed_files": len(changed), "deleted_files": len(deleted),
             "added_chunks": added_chunks,}
 
+    def _get_lexical_index(self) -> CharBigramBM25:
+        """调用方须先成功 sync；首次读取正文建索引，之后复用。"""
+        if self._lexical_index is not None:
+            logger.debug(
+                "关键词索引复用：chunks=%d",
+                len(self._lexical_index.documents),
+            )
+            return self._lexical_index
+
+        try:
+            stored = self.store.get(
+                include=["documents", "metadatas"]
+            )
+        except Exception as exc:
+            raise RAGError("读取关键词索引正文失败。") from exc
+
+        texts = stored.get("documents")
+        metadatas = stored.get("metadatas")
+
+        # 不能用 zip 静默忽略多出的正文或元数据。
+        if (
+            not isinstance(texts, list)
+            or not isinstance(metadatas, list)
+            or len(texts) != len(metadatas)
+        ):
+            raise RAGError(
+                "关键词索引正文与元数据数量不一致或格式错误。"
+            )
+
+        documents: list[Document] = []
+        seen: set[tuple[str, int]] = set()
+
+        for text, metadata in zip(texts, metadatas):
+            if (
+                not isinstance(text, str)
+                or not isinstance(metadata, dict)
+            ):
+                raise RAGError(
+                    "关键词索引存在缺失的正文或元数据。"
+                )
+
+            source = metadata.get("source")
+            chunk = metadata.get("chunk_index")
+
+            if (
+                not isinstance(source, str)
+                or not source.strip()
+                or type(chunk) is not int
+                or chunk < 0
+            ):
+                raise RAGError(
+                    "关键词索引缺少有效的 source/chunk_index。"
+                )
+
+            key = (source, chunk)
+            if key in seen:
+                raise RAGError(
+                    "关键词索引存在重复资料块位置。"
+                )
+            seen.add(key)
+
+            documents.append(Document(
+                page_content=text,
+                metadata=dict(metadata),
+            ))
+
+        # 数据库返回顺序不保证稳定，固定同分时的先后顺序。
+        documents.sort(key=lambda doc: (
+            str(doc.metadata["source"]),
+            int(doc.metadata["chunk_index"]),
+        ))
+
+        index = CharBigramBM25(documents)
+
+        # 全部读取、校验和构建成功后才发布缓存，不留下半成品。
+        self._lexical_index = index
+        logger.debug(
+            "关键词索引构建：chunks=%d",
+            len(documents),
+        )
+        return index
+
+    def retrieve_lexical(
+        self,
+        query: str,
+        *,
+        k: int = 16,
+        exclude_suffixes: set[str] | None = None,
+    ) -> list[Document]:
+        """关键词候选入口，暂不参与正式检索的融合。"""
+        if k < 1:
+            raise ValueError("k 必须大于 0")
+        if not query.strip():
+            return []
+
+        # 仍检查文件哈希；资料未变化时，不重新读取全库、分词建索引。
+        self.sync()
+        index = self._get_lexical_index()
+
+        excluded = {
+            suffix.lower()
+            for suffix in (exclude_suffixes or set())
+        }
+
+        # 先排除文件类型，再取 k，避免排除项挤占名额。
+        # 当前 BM25 本来就排序所有匹配块；大语料时再优化过滤下推。
+        hits = index.search(
+            query,
+            k=max(1, len(index.documents)),
+        )
+        selected = [
+            doc
+            for doc in hits
+            if Path(
+                str(doc.metadata["source"])
+            ).suffix.lower() not in excluded
+        ][:k]
+
+        # 返回副本，避免调用方写入 matched_queries、rrf_score 等
+        # 临时字段后污染缓存，影响下一次查询。
+        return [
+            Document(
+                page_content=doc.page_content,
+                metadata=dict(doc.metadata),
+            )
+            for doc in selected
+        ]
+
+    def retrieve_hybrid_candidates(
+        self,
+        query: str,
+        *,
+        branch_limit: int = 32,
+        candidate_limit: int = 16,
+        exclude_suffixes: set[str] | None = None,
+    ) -> list[Document]:
+        """两路召回并融合候选；不是最终证据，不替换默认 retrieve。"""
+        if branch_limit < 1 or candidate_limit < 1:
+            raise ValueError("候选数量上限必须大于 0")
+        if not query.strip():
+            return []
+
+        self.sync()
+
+        excluded = {
+            suffix.lower()
+            for suffix in (exclude_suffixes or set())
+        }
+        fetch_k = (
+            max(branch_limit * 2, 60)
+            if excluded
+            else branch_limit
+        )
+
+        raw = self.store.similarity_search_with_relevance_scores(
+            query=query,
+            k=fetch_k,
+        )
+        dense = [
+            (doc, score)
+            for doc, score in raw
+            if Path(
+                str(doc.metadata.get("source", ""))
+            ).suffix.lower() not in excluded
+        ][:branch_limit]
+
+        # 已成功同步，直接复用缓存，避免 retrieve_lexical 再同步一次。
+        index = self._get_lexical_index()
+        lexical = [
+            doc
+            for doc in index.search(
+                query,
+                k=max(1, len(index.documents)),
+            )
+            if Path(
+                str(doc.metadata.get("source", ""))
+            ).suffix.lower() not in excluded
+        ][:branch_limit]
+
+        candidates = fuse_rrf_candidates(
+            dense,
+            lexical,
+            limit=candidate_limit,
+        )
+
+        # 动态评估：观察两路独有候选及排名，不能只看候选数量增加。
+        # 本入口失败直接暴露；正式策略接入时在调用层实现向量回退。
+        logger.debug(
+            "混合候选：dense=%d lexical=%d fused=%d lexical_only=%d",
+            len(dense),
+            len(lexical),
+            len(candidates),
+            sum(
+                "dense_rank" not in doc.metadata
+                for doc in candidates
+            ),
+        )
+
+        return candidates
+
     def retrieve(
             self,
             query: str,
@@ -480,6 +777,8 @@ class LearningRAG:
             relative_margin: float = 0.12,
             min_hits: int = 3,
             exclude_suffixes: set[str] | None = None,
+            candidate_audit: list[dict[str, object]] | None = None,
+            rerank: bool = False,
     ) -> list[Document]:
         """"执行带阈值的相似度检索。
 
@@ -506,7 +805,7 @@ class LearningRAG:
             - relevance_score: float 类型的相似度分数（余弦距离，越高越相关）。
         """
         self.sync()
-        logger.info(
+        logger.debug(
             "RAG 查询：query=%r k=%d "
             "min_relevance=%.4f relative_margin=%.4f",
             " ".join(query.split())[:300],
@@ -543,6 +842,30 @@ class LearningRAG:
             k=fetch_k,
         )
 
+        audit_by_identity: dict[int, dict[str, object]] = {}
+        if candidate_audit is not None:
+            for raw_rank, (document, score) in enumerate(
+                raw_candidates, start=1
+            ):
+                source = str(document.metadata.get("source", ""))
+                row: dict[str, object] = {
+                    "source": source,
+                    "page": document.metadata.get("page"),
+                    "chunk_index": document.metadata.get("chunk_index"),
+                    "raw_rank": raw_rank,
+                    "score": round(float(score), 4),
+                    "decision": (
+                        "reject_suffix"
+                        if Path(source).suffix.lower() in normalized_excluded
+                        else "pending"
+                    ),
+                }
+                candidate_audit.append(row)
+
+                # 后续过滤沿用同一个 Document 对象；用其身份找到对应记录。
+                # 只记录位置和分数，不把书籍正文写入评测结果。
+                audit_by_identity[id(document)] = row
+
         candidates = [
             (document, score)
             for document, score in raw_candidates
@@ -551,7 +874,7 @@ class LearningRAG:
             ).suffix.lower() not in normalized_excluded
         ]
 
-        logger.info(
+        logger.debug(
             "候选文件类型过滤：raw=%d remaining=%d exclude_suffixes=%s",
             len(raw_candidates),
             len(candidates),
@@ -560,7 +883,7 @@ class LearningRAG:
 
         # 阈值计算必须发生在过滤之后，这样 .py 的高分结果不会影响 PDF/MD/TXT 的动态阈值。
         if not candidates:
-            logger.info("检索没有返回候选结果。")
+            logger.debug("检索没有返回候选结果。")
             return []
 
         best_score = max(score for _, score in candidates)
@@ -615,7 +938,7 @@ class LearningRAG:
             min_relevance,
             softened_relative_threshold,
         )
-        logger.info(
+        logger.debug(
             "检索阈值计算：best_score=%.4f "
             "raw_relative=%.4f coverage_floor=%.4f "
             "final_threshold=%.4f min_hits=%d active_rule=%s",
@@ -630,6 +953,15 @@ class LearningRAG:
                 else "softened"
             ),
         )
+
+        if rerank:
+            # 阈值仍由向量召回计算，重排只决定合格片段的先后。
+            # 必须发生在同页去重和取K之前，才能选择更直接的正文片段。
+            candidates = _rerank_candidate_pairs(
+                query,
+                candidates,
+                min_score=dynamic_threshold,
+            )
 
         selected: list[Document] = []
 
@@ -708,8 +1040,9 @@ class LearningRAG:
             else:
                 decision = "selected"
 
-                # 把分数和原始排名写入 metadata，
-                # 后续输出上下文或排查问题时可以继续使用。
+                # relevance_score 保留向量分数；
+                # retrieval_rank 表示当前排序位置，重排后不再是原始向量排名。
+                # 原始向量排名仍保存在 candidate_audit 的 raw_rank 中。
                 document.metadata["relevance_score"] = float(score)
                 document.metadata["retrieval_rank"] = rank
 
@@ -717,6 +1050,12 @@ class LearningRAG:
                 seen_locations.add(location_key)
 
             decision_counts[decision] += 1
+
+            if candidate_audit is not None:
+                # 动态评估：若金标准页面在原始候选中却未被选中，
+                # 可直接区分阈值、同页去重和 k 名额限制。
+                audit_by_identity[id(document)]["decision"] = decision
+
             # selected 候选正常打印；因重复页面被淘汰的不打印；
             # 因 k 已满被淘汰的不打印；因阈值被淘汰的候选先暂存，稍后只展示最高的 3 条。
             if decision == "selected":
@@ -724,7 +1063,7 @@ class LearningRAG:
                     document.page_content[:120].split()
                 )
 
-                logger.info(
+                logger.debug(
                     "RAG 命中：rank=%d score=%.4f "
                     "source=%s page=%s chunk=%s preview=%r",
                     rank,
@@ -758,7 +1097,7 @@ class LearningRAG:
                 rejected_page,
                 rejected_chunk,
         ) in borderline_rejected[:3]:
-            logger.info(
+            logger.debug(
                 "RAG 临界淘汰：rank=%d score=%.4f "
                 "reason=%s source=%s page=%s chunk=%s",
                 rejected_rank,
@@ -768,7 +1107,7 @@ class LearningRAG:
                 rejected_page,
                 rejected_chunk,
             )
-        logger.info(
+        logger.debug(
             "检索过滤完成：候选=%d, 保留=%d, "
             "best_score=%.4f, relative_threshold=%.4f, "
             "dynamic_threshold=%.4f, "
@@ -787,6 +1126,176 @@ class LearningRAG:
 
         return selected
 
+    def retrieve_with_strategy(
+        self,
+        query: str,
+        k: int = 6,
+        *,
+        min_relevance: float = 0.35,
+        relative_margin: float = 0.12,
+        min_hits: int = 3,
+        exclude_suffixes: set[str] | None = None,
+        rerank: bool = False,
+        strategy: str | None = None,
+    ) -> list[Document]:
+        """业务策略入口；旧 retrieve 保持向量基线与原审计口径。"""
+        settings = get_settings()
+        mode = (
+            strategy
+            if strategy is not None
+            else settings.rag_retrieval_strategy
+        )
+        if mode not in {"dense", "hybrid"}:
+            raise ValueError("检索策略必须为 dense 或 hybrid")
+        if k < 1:
+            raise ValueError("k 必须大于 0")
+
+        dense_args = dict(
+            query=query,
+            k=k,
+            min_relevance=min_relevance,
+            relative_margin=relative_margin,
+            min_hits=min_hits,
+            exclude_suffixes=exclude_suffixes,
+        )
+
+        if mode == "dense":
+            return self.retrieve(**dense_args, rerank=rerank)
+
+        def fallback(reason: str) -> list[Document]:
+            logger.warning(
+                "混合检索回退：strategy=dense reason=%s",
+                reason,
+            )
+            # 不再次请求可能刚刚失败的重排服务。
+            # 原向量阈值、去重与数量限制保持不变。
+            hits = self.retrieve(**dense_args, rerank=False)
+            for hit in hits:
+                hit.metadata["retrieval_strategy"] = "dense_fallback"
+                hit.metadata["retrieval_fallback_reason"] = reason
+            return hits
+
+        # 关闭重排仍恢复向量基线；聊天后端仅排序，专用后端额外做相关性阈值过滤。
+        if not rerank:
+            return fallback("rerank_disabled")
+
+        try:
+            candidates = self.retrieve_hybrid_candidates(
+                query,
+                candidate_limit=settings.rag_rerank_candidate_limit,
+                exclude_suffixes=exclude_suffixes,
+            )
+            if not candidates:
+                logger.debug("混合检索无候选：returned=0")
+                return []
+
+            outcome = rerank_candidates(
+                query,
+                candidates,
+                **configured_rerank_options(settings),
+            )
+
+            expected = {
+                (
+                    doc.metadata["source"],
+                    doc.metadata["chunk_index"],
+                ): doc
+                for doc in candidates
+            }
+            keys = [
+                (
+                    doc.metadata["source"],
+                    doc.metadata["chunk_index"],
+                )
+                for doc in outcome.documents
+            ]
+            if (
+                len(keys) != len(expected)
+                or set(keys) != set(expected)
+            ):
+                raise ValueError(
+                    "混合重排结果与候选位置不一致"
+                )
+
+            selected: list[Document] = []
+            seen_locations: set[tuple] = set()
+
+            for rank, doc in enumerate(outcome.documents, start=1):
+                original = expected[keys[rank - 1]]
+                is_chat = settings.rag_rerank_backend == "chat"
+                score = None if is_chat else float(doc.metadata["rerank_score"])
+
+                if (
+                    (score is not None and not math.isfinite(score))
+                    or doc.page_content != original.page_content
+                    or doc.metadata.get("page")
+                    != original.metadata.get("page")
+                ):
+                    raise ValueError(
+                        "混合重排结果内容或分数无效"
+                    )
+
+                # 重排分数只与自己的阈值比较，不与向量或 RRF 阈值混用。
+                if score is not None and score < settings.rag_hybrid_min_rerank_score:
+                    continue
+
+                source = str(doc.metadata["source"])
+                page = doc.metadata.get("page")
+                location = (
+                    (source, "page", int(page))
+                    if page is not None
+                    else (
+                        source,
+                        "chunk",
+                        int(doc.metadata["chunk_index"]),
+                    )
+                )
+
+                # 必须在重排后按页去重，让同页的更直接证据有机会入选。
+                if location in seen_locations or len(selected) >= k:
+                    continue
+
+                metadata = dict(original.metadata)
+                metadata.pop("rerank_score", None)
+                if score is not None:
+                    metadata["rerank_score"] = score
+                for field in ("rerank_rank", "rerank_backend", "rerank_model"):
+                    if field in doc.metadata:
+                        metadata[field] = doc.metadata[field]
+                metadata.update(
+                    retrieval_rank=rank,
+                    retrieval_strategy="hybrid",
+                )
+                if "dense_score" in metadata:
+                    metadata["relevance_score"] = metadata["dense_score"]
+
+                selected.append(Document(
+                    page_content=original.page_content,
+                    metadata=metadata,
+                ))
+                seen_locations.add(location)
+
+            # 无合格结果是正常判定，不用向量回退把低相关结果补回来。
+            logger.debug(
+                "混合检索完成：candidates=%d selected=%d "
+                "backend=%s filter=%s min_rerank=%.3f tokens=%s",
+                len(candidates),
+                len(selected),
+                settings.rag_rerank_backend,
+                "rank_only" if settings.rag_rerank_backend == "chat" else "score_threshold",
+                settings.rag_hybrid_min_rerank_score,
+                outcome.total_tokens,
+            )
+            return selected
+
+        except Exception as exc:
+            # 只记录类型，不输出接口异常全文、密钥或资料正文。
+            logger.warning(
+                "混合检索异常：error_type=%s",
+                type(exc).__name__,
+            )
+            return fallback("hybrid_failed")
+
     def retrieve_many(
             self,
             queries: tuple[tuple[str, str], ...],
@@ -798,27 +1307,28 @@ class LearningRAG:
             min_hits: int,
             exclude_suffixes: set[str] | None = None,
     ) -> list[Document]:
-        """分别召回四类 hit，再以轮询方式合并和去重。
+        """对传入的任意数量查询分别检索，再轮询合并结果。
 
-        轮询不是按全局分数直接排序，而是依次从每种 query 中取一个结果。
-        这样可以避免 organization 的多个高分结果占满全部名额，
-        让 implementation 和 usage_validation 至少获得基本覆盖。
+        查询由调用方提供；本方法不生成 query，也不额外调用聊天模型。
+        单查询时保持该查询的结果顺序，多查询时交替取各列表的同名次结果。
+        轮询用于兼顾多个已知主题，并不要求交互问题拆成固定四类。
 
         动态评估：
-        - merged_hits 明显小于各查询 hit 总和，说明跨查询重复较多；
-        - 某类 query 长期贡献 0 个，需要检查 query 表达或阈值；
-        - 如果低相关类别挤占过多名额，再考虑加入 reranker，而不是先扩大 k。
+        - 聚焦问题优先减少无必要 query，而不是删除合并机制；
+        - 检查每条 query 的新增证据及字符预算截断情况；
+        - 多主题查询的分数针对不同问题，不宜直接一锅按分数排序。
         """
         grouped_hits: list[tuple[str, list[Document]]] = []
 
         for query_id, query in queries:
-            hits = self.retrieve(
+            hits = self.retrieve_with_strategy(
                 query=query,
                 k=k_per_query,
                 min_relevance=min_relevance,
                 relative_margin=relative_margin,
                 min_hits=min_hits,
                 exclude_suffixes=exclude_suffixes,
+                rerank=get_settings().rag_rerank_enabled,
             )
 
             # matched_queries 只用于本次内存中的上下文解释，不写回 Chroma。
@@ -872,7 +1382,7 @@ class LearningRAG:
             if len(selected) >= max_hits:
                 break
 
-        logger.info(
+        logger.debug(
             "多查询命中合并：queries=%d raw_hits=%d merged_hits=%d max_hits=%d",
             len(grouped_hits),
             sum(len(hits) for _, hits in grouped_hits),
@@ -930,6 +1440,22 @@ class LearningRAG:
             if isinstance(score, (int, float)):
                 header_parts.append(f"score={float(score):.4f}")
 
+            # 分开命名，避免模型或人工复盘时把不同评分当作同一种量。
+            for field in ("rrf_score", "rerank_score"):
+                value = metadata.get(field)
+                if isinstance(value, (int, float)):
+                    header_parts.append(
+                        f"{field}={float(value):.4f}"
+                    )
+            if metadata.get("rerank_backend"):
+                header_parts.append(f"rerank_backend={metadata['rerank_backend']}")
+            if metadata.get("rerank_rank") is not None:
+                header_parts.append(f"rerank_rank={metadata['rerank_rank']}")
+
+            strategy = metadata.get("retrieval_strategy")
+            if strategy:
+                header_parts.append(f"strategy={strategy}")
+
             if matched_query_text:
                 header_parts.append(f"queries={matched_query_text}")
 
@@ -944,7 +1470,7 @@ class LearningRAG:
             sections.append(section)
             used_chars += len(section)
 
-        logger.info(
+        logger.debug(
             "检索上下文格式化完成 documents=%s used_chars=%s max_chars=%s",
             len(sections),
             used_chars,
@@ -1049,6 +1575,18 @@ class LearningRAG:
                         hit.metadata.get("relevance_score")
                     )
 
+                    # Chroma 中不保存本次查询评分，真正命中块需要显式继承。
+                    # 邻居块不能继承，否则会被误认为同样经过检索和重排。
+                    for field in (
+                        "rrf_score", "rrf_rank",
+                        "dense_score", "dense_rank", "lexical_rank",
+                        "rerank_score", "retrieval_rank",
+                        "rerank_rank", "rerank_backend", "rerank_model",
+                        "retrieval_strategy", "retrieval_fallback_reason",
+                    ):
+                        if field in hit.metadata:
+                            neighbor.metadata[field] = hit.metadata[field]
+
                     matched_queries = hit.metadata.get("matched_queries")
                     if matched_queries:
                         neighbor.metadata["matched_queries"] = matched_queries
@@ -1071,18 +1609,20 @@ class LearningRAG:
     ) -> str:
         """把检索结果转换成 LLM 上下文，检索、过滤并扩展相邻 chunk。
 
-        role=hit 是真正向量命中；
+        role=hit 是检索命中，可来自向量或混合策略；
         role=neighbor 是为了补上下文而加入；
         neighbor 不应该伪装成高相关结果；
         max_context_chars 防止多个命中扩展后无限膨胀。
         """
-        hits = self.retrieve(
+        hits = self.retrieve_with_strategy(
             query=query,
             k=k,
             min_relevance=min_relevance,
             relative_margin=relative_margin,
             min_hits=get_settings().rag_min_hits_per_query,
             exclude_suffixes=exclude_suffixes,
+            # 与业务多查询入口保持一致，避免混合配置下意外关闭重排。
+            rerank=get_settings().rag_rerank_enabled,
         )
 
         if not hits:
@@ -1131,7 +1671,7 @@ class LearningRAG:
             blocks.append(block)
             total_chars += len(block)
 
-        logger.info(
+        logger.debug(
             "最终上下文：命中 %d 个，扩展后 %d 个，输出 %d 字符。",
             len(hits),
             len(docs),

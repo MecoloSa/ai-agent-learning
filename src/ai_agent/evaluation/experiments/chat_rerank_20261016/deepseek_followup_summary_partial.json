@@ -1,0 +1,110 @@
+{
+  "rrf/all": {
+    "requests": 18,
+    "successes": 18,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "total_tokens": 0,
+    "hit1": 0.5,
+    "acceptable_hit1": 0.6111,
+    "mrr5": 0.6713,
+    "recall5": 0.9444,
+    "recall8": 1.0
+  },
+  "rrf/audited": {
+    "requests": 15,
+    "successes": 15,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "total_tokens": 0,
+    "hit1": 0.4667,
+    "acceptable_hit1": 0.6,
+    "mrr5": 0.6389,
+    "recall5": 0.9333,
+    "recall8": 1.0
+  },
+  "rrf/holdout": {
+    "requests": 3,
+    "successes": 3,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "total_tokens": 0,
+    "hit1": 0.6667,
+    "acceptable_hit1": 0.6667,
+    "mrr5": 0.8333,
+    "recall5": 1.0,
+    "recall8": 1.0
+  },
+  "qwen3.6-flash/all": {
+    "requests": 36,
+    "successes": 36,
+    "p50_ms": 730.4,
+    "p95_ms": 905.7,
+    "total_tokens": 266732,
+    "hit1": 0.7778,
+    "acceptable_hit1": 0.9444,
+    "mrr5": 0.8519,
+    "recall5": 0.9444,
+    "recall8": 0.9444
+  },
+  "qwen3.6-flash/audited": {
+    "requests": 30,
+    "successes": 30,
+    "p50_ms": 728.8,
+    "p95_ms": 905.7,
+    "total_tokens": 224414,
+    "hit1": 0.7333,
+    "acceptable_hit1": 0.9333,
+    "mrr5": 0.8222,
+    "recall5": 0.9333,
+    "recall8": 0.9333
+  },
+  "qwen3.6-flash/holdout": {
+    "requests": 6,
+    "successes": 6,
+    "p50_ms": 745.5,
+    "p95_ms": 838.0,
+    "total_tokens": 42318,
+    "hit1": 1,
+    "acceptable_hit1": 1,
+    "mrr5": 1.0,
+    "recall5": 1.0,
+    "recall8": 1.0
+  },
+  "deepseek-v4.1-flash/all": {
+    "requests": 36,
+    "successes": 36,
+    "p50_ms": 1289.2,
+    "p95_ms": 2187.1,
+    "total_tokens": 261852,
+    "hit1": 0.8611,
+    "acceptable_hit1": 0.9722,
+    "mrr5": 0.9139,
+    "recall5": 1.0,
+    "recall8": 1.0
+  },
+  "deepseek-v4.1-flash/audited": {
+    "requests": 30,
+    "successes": 30,
+    "p50_ms": 1312.2,
+    "p95_ms": 2187.1,
+    "total_tokens": 220040,
+    "hit1": 0.8667,
+    "acceptable_hit1": 1,
+    "mrr5": 0.9133,
+    "recall5": 1.0,
+    "recall8": 1.0
+  },
+  "deepseek-v4.1-flash/holdout": {
+    "requests": 6,
+    "successes": 6,
+    "p50_ms": 1181.8,
+    "p95_ms": 1449.5,
+    "total_tokens": 41812,
+    "hit1": 0.8333,
+    "acceptable_hit1": 0.8333,
+    "mrr5": 0.9167,
+    "recall5": 1.0,
+    "recall8": 1.0
+  }
+}

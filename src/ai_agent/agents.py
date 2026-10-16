@@ -1,4 +1,5 @@
-"""两个职责清晰的智能体，以及它们之间的协作流程。"""
+"""两个职责清晰的智能体，以及它们之间的协作流程。
+plan_evidence_trace仅用于本地实验审计，不影响原有返回值。"""
 
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ from .tools import (
 )
 from .rag import LearningRAG, needs_rag
 # 用于识别当前语料实际包含哪些文件类型，这里只读取文件路径。
-from .materials import iter_material_files
+from .materials import iter_material_files, read_material_excerpt
 
 import hashlib
 import logging
@@ -51,10 +52,21 @@ def _preview(text: str, limit: int) -> str:
     omitted = len(normalized) - limit
     return f"{normalized[:limit]}\n...<省略 {omitted} 字符>"
 
+def _get_model_name(llm) -> str:
+    """识别本次调用模型，包括绑定工具后的包装对象。"""
+    # bind_tools() 的返回对象可能把实际模型保存在 bound 属性中。
+    model = getattr(llm, "bound", llm)
+    return str(
+        getattr(model, "model_name", None)
+        or getattr(model, "model", None)
+        or "unknown"
+    )
 
 def _log_model_request(
     stage: str,
     messages,
+    *,
+    model_name: str = "unknown",
 ) -> None:
     """记录模型请求结构；按配置决定是否显示截断预览。"""
     settings = get_settings()
@@ -92,7 +104,7 @@ def _log_model_request(
         "messages=%d total_chars=%d fingerprint=%s "
         "message_info=%s",
         stage,
-        settings.chat_model,
+        model_name,
         settings.llm_temperature,
         settings.request_timeout,
         len(message_list),
@@ -141,6 +153,8 @@ def _log_model_request(
 def _log_model_response(
     stage: str,
     response,
+    *,
+    model_name: str = "unknown",
 ) -> None:
     """记录模型响应元数据和可选的正文预览。"""
     settings = get_settings()
@@ -170,7 +184,7 @@ def _log_model_response(
         getattr(response, "id", None),
         metadata.get("model_name")
         or metadata.get("model")
-        or settings.chat_model,
+        or model_name,
         metadata.get("finish_reason"),
         len(content),
         len(tool_calls),
@@ -188,11 +202,21 @@ def _log_model_response(
             ),
         )
 
-settings = get_settings()
-
 # 原来的 TOOL_MAP 为全局，现在的工具绑定具体的资料目录
+settings = get_settings()
 MAX_TOOL_ROUNDS = settings.agent_max_tool_rounds
 MAX_PLAN_EVIDENCE_CHARS = settings.plan_max_evidence_chars
+
+# 仅适用于一次资料分析任务，不限制整个交互会话。
+# 动态评估：正常任务若频繁触发某工具上限，应检查是否确有证据缺口，
+# 再局部调整额度；不要直接提高所有工具的预算。
+ANALYSIS_TOOL_LIMITS: dict[str, int] = {
+    "list_learning_files": 2,
+    "read_learning_file": 6,
+    "search_learning_files": 4,
+    "retrieve_learning_context": 3,
+    "summarize_text_statistics": 2,
+}
 
 RETRY_STOP = stop_after_attempt(settings.llm_retry_attempts)
 RETRY_WAIT = wait_exponential(
@@ -206,6 +230,91 @@ class LLMInvocationError(RuntimeError):
 
 class RetryableLLMError(LLMInvocationError):
     """可重试错误（超时、限流、服务端错误等）；@retry 只重试本类。"""
+
+class AnalysisExecutionError(RuntimeError):
+    """程序确认分析未完成；调用方必须停止后续计划生成。"""
+
+    def __init__(self, reason: str, message: str):
+        # reason 是稳定的程序原因代码，便于日志、评测及后续状态图使用。
+        self.reason = reason
+        super().__init__(f"{reason}: {message}")
+
+
+def _require_analysis_text(value: object) -> str:
+    """分析阶段必须返回非空文本，不能把空值强制转成字符串冒充结论。"""
+    if not isinstance(value, str) or not value.strip():
+        raise AnalysisExecutionError(
+            "invalid_analysis_output",
+            "资料分析未返回非空文本；未生成学习计划。",
+        )
+    return value.strip()
+
+def _build_analysis_budget_status(
+    tool_names: list[str],
+    tool_counts: dict[str, int],
+    executed_calls: int,
+    total_limit: int,
+    remaining_model_rounds: int,
+) -> dict[str, object]:
+    """从程序真实计数生成模型可见预算，不让模型自行记账。"""
+    remaining_total = max(0, total_limit - executed_calls)
+
+    # 单工具实际可用次数同时受自身额度与总额度约束。
+    # 只展示本次绑定的工具，避免暗示其他工具也可以调用。
+    remaining_by_tool = {
+        name: min(
+            remaining_total,
+            max(
+                0,
+                ANALYSIS_TOOL_LIMITS.get(name, 4)
+                - tool_counts.get(name, 0),
+            ),
+        )
+        for name in tool_names
+    }
+
+    notices = [
+        "额度是上限，不必用满；批量请求中的每个执行分别计数。",
+        "同参请求仍会被拒绝；剩余额度不代表允许重复执行。",
+    ]
+
+    if remaining_total == 0:
+        notices.append(
+            "工具总额度已用完，不要再请求工具；"
+            "请依据已有证据回答，明确不足之处。"
+        )
+    elif remaining_total == 1:
+        notices.append(
+            "所有工具合计最多还可执行1次，"
+            "请优先补足最关键的证据缺口。"
+        )
+    else:
+        last_chance_tools = [
+            name
+            for name, count in remaining_by_tool.items()
+            if count == 1
+        ]
+        if last_chance_tools:
+            notices.append(
+                "以下工具各自最多还可执行1次："
+                + "、".join(last_chance_tools)
+                + "。请优先处理必要的证据缺口。"
+            )
+
+    # 工具额度未耗尽，也可能先达到模型轮数上限。
+    # 明确告知：最后一轮调用工具后，不会额外赠送一次模型收尾。
+    if remaining_model_rounds == 1:
+        notices.append(
+            "本轮是最后一次模型决策；调用工具后没有下一轮生成分析。"
+            "请依据已有证据作答，并明确不足之处。"
+        )
+
+    return {
+        "remaining_total": remaining_total,
+        "remaining_by_tool": remaining_by_tool,
+        "remaining_model_rounds_including_current": remaining_model_rounds,
+        "notice": " ".join(notices),
+    }
 
 def _is_retryable(exc: BaseException) -> bool:
     """断是否值得重试：超时、限流、服务端错误重试；鉴权/参数错误不重试。"""
@@ -235,9 +344,11 @@ def _invoke_llm_raw(llm, messages, *, stage: str):
         #   Agentic 每一轮；
         #   学习计划生成；
         #   重试后的再次请求。
+        model_name = _get_model_name(llm)
         _log_model_request(
             stage,
             messages,
+            model_name=model_name,
         )
 
         start = time.perf_counter()
@@ -247,6 +358,7 @@ def _invoke_llm_raw(llm, messages, *, stage: str):
         _log_model_response(
             stage,
             response,
+            model_name=model_name,
         )
         usage = getattr(
             response,
@@ -254,11 +366,12 @@ def _invoke_llm_raw(llm, messages, *, stage: str):
             None,
         )
         logger.info(
-            "【%s】模型调用完成：耗时=%.1f秒 tokens=%s",
+            "【%s】模型调用完成：model=%s 耗时=%.1f秒 tokens=%s",
             stage,
+            model_name,
             elapsed,
             (
-                dict(usage)
+                dict(usage).get("total_tokens", "未知")
                 if usage
                 else "未知"
             ),
@@ -319,7 +432,7 @@ def log_citation_summary(
     displayed = citations[:max_display]
     omitted = len(citations) - len(displayed)
 
-    logger.info(
+    logger.debug(
         "回答引用汇总：stage=%s count=%d "
         "citations=%s omitted=%d",
         stage,
@@ -348,14 +461,15 @@ def collect_material_context(material_dir: str) -> str:
                 continue
             if path.is_file():
                 relative_path = path.relative_to(root)
-                snippets.append(
-                    f"\n--- {relative_path} ---\n"
-                    + read_learning_file.invoke({
-                        "root_dir": material_dir,
-                        "relative_path": str(relative_path),
-                        "max_chars": settings.material_snippet_max_chars,
-                    })
+                data = read_material_excerpt(
+                    material_dir,
+                    str(relative_path),
+                    settings.material_snippet_max_chars,
                 )
+                snippets.append(json.dumps(
+                    {"ok": True, "data": data},
+                    ensure_ascii=False,
+                ))
     combined = "\n".join(snippets)
     stats = summarize_text_statistics.invoke({"text": combined}) if combined else "无可读文本。"
     return f"文件清单：\n{file_list}\n\n资料摘录：{combined}\n\n资料统计：{stats}"
@@ -384,7 +498,7 @@ def _collect_python_sources(
     )
 
     if not python_paths:
-        logger.info("资料目录中没有Python源码。")
+        logger.debug("资料目录中没有Python源码。")
         return ""
 
     blocks: list[str] = []
@@ -404,7 +518,7 @@ def _collect_python_sources(
         )
         total_chars += len(content)
 
-    logger.info(
+    logger.debug(
         "Python源码已全部完整读取：files=%d chars=%d",
         len(python_paths),
         total_chars,
@@ -412,67 +526,53 @@ def _collect_python_sources(
 
     return "\n\n---\n\n".join(blocks)
 
+# 两种资料分析模式与计划生成共用规则，避免各阶段采用不同的学习标准。
+# 动态评估：观察是否强加实践，以及明确要求实践时是否遗漏具体行动。
+LEARNING_ACTIVITY_RULES = (
+    "学习活动必须依据用户目标和资料内容选择，"
+    "不能根据文件后缀推断学习主题。\n"
+    "可以采用阅读、概念解释、观点比较、技能练习或代码实现；"
+    "不要对所有资料套用同一种活动。\n"
+    "用户仅要求阅读或理解时，不强制安排实践项目、代码执行或测试；"
+    "用户明确要求实践时，应提供适合该领域的具体行动。\n"
+    "完成标志应与学习目标匹配，可以是解释概念、比较观点、"
+    "完成作品或检查运行结果，不必每个任务都提交文档或参加测验。\n"
+    "自行设计的学习活动必须标记为“计划设计”，"
+    "不能声称它是资料原有的练习或项目。\n"
+    "计划中的预期结果不是已经发生的事实；"
+    "已阅读或用户自报理解，不等于已经确认掌握。\n"
+)
+
 def _build_broad_retrieval_queries(
     material_dir: str,
     learning_goal: str,
 ) -> tuple[tuple[str, str], ...]:
-    """根据实际文件类型构造四个短而单一的检索意图。
+    """根据学习目标构造四个检索方向，不根据后缀推断学习主题。
 
-    动态评估：
-    - 观察四类 query 的命中预览是否各自集中在对应主题；
-    - 如果不同 query 仍大量命中相同 chunk，说明需要进一步细化主题，
-      而不是继续向 query 中堆叠关键词。
+    material_dir 保留用于兼容现有调用；文件读取与格式处理由上游负责。
+    动态评估：比较目标相关证据覆盖、重复命中和补充检索次数。
+    查询更通用不一定召回更好，技术资料也要保留对照案例。
     """
-    root = Path(material_dir).resolve()
-    suffixes = {
-        path.suffix.lower()
-        for path in iter_material_files(root)
-    }
-
-    # 用户目标可能包含换行或多余空格，先压缩成适合向量化的一句话。
     goal = " ".join(learning_goal.split())
 
-    organization_focus: list[str] = []
-    implementation_focus: list[str] = []
-    validation_focus: list[str] = []
-
-    if ".pdf" in suffixes:
-        organization_focus.append("章节关系、前置知识与学习顺序")
-        implementation_focus.append("正文中的核心机制与技术原理")
-        validation_focus.append("实验、示例、练习与验收方式")
-
-    if ".md" in suffixes:
-        organization_focus.append("文档标题结构与文件关系")
-        implementation_focus.append("架构说明、配置与接口")
-        validation_focus.append("安装、使用示例与故障排查")
-
-    if ".txt" in suffixes:
-        organization_focus.append("主题关系与要点顺序")
-        implementation_focus.append("具体流程、规则与限制")
-        validation_focus.append("实践步骤、结果与注意事项")
-
-    # 如果只有 Python，下面四类文档查询不会真正用于 RAG；
-    # 保留回退值可以避免函数返回含义不完整。
-    organization_need = "；".join(organization_focus) or "资料结构与内容关系"
-    implementation_need = "；".join(implementation_focus) or "核心实现与数据流"
-    validation_need = "；".join(validation_focus) or "使用方法与验证方式"
-
+    # 保留原查询标签和四路检索流程，避免同时改变检索编排。
+    # 标签仅用于区分查询，不代表用户必须学习实现或进行实践。
     return (
         (
             "goal",
-            f"{goal}；核心主题、关键定义与工作原理",
+            f"{goal}；直接相关的核心内容、关键概念与主要观点",
         ),
         (
             "organization",
-            f"{goal}；{organization_need}",
+            f"{goal}；知识结构、内容之间的关系与前置知识",
         ),
         (
             "implementation",
-            f"{goal}；{implementation_need}",
+            f"{goal}；正文中的具体解释、例子、区别与适用条件",
         ),
         (
             "usage_validation",
-            f"{goal}；{validation_need}",
+            f"{goal}；资料中相关的学习指引、应用示例、练习或小结",
         ),
     )
 
@@ -483,9 +583,7 @@ def analyse_materials(material_dir: str, learning_goal: str) -> tuple[str, str]:
     收集到的文件清单/摘录/统计，供 interactive 模式直接复用，避免重复读文件。
     """
     logger.info(
-        "【资料分析智能体】开始，material_dir=%s, goal=%s",
-        material_dir,
-        learning_goal,
+        "开始资料分析：mode=pipeline",
     )
 
     # 不论其他资料是否进入RAG，Python源码始终完整读取。
@@ -507,41 +605,16 @@ def analyse_materials(material_dir: str, learning_goal: str) -> tuple[str, str]:
         )
 
         # 第二步：使用多查询检索机制，针对学习目标检索具体内容。
-        # 仍然只执行四次向量检索：
-        # 1. 目标相关事实；
-        # 2. 资料/代码组织关系；
-        # 3. 技术实现；
-        # 4. 使用、实践与验证。
-        #
-        # 不依赖“章节结构”，也不增加额外 LLM 调用。
+        # 四个方向：目标内容、知识关系、具体解释、学习辅助依据。
+        # 文件格式只影响读取方式，不决定学习主题或强制实践。
+        # 动态评估：同时比较非技术资料和技术资料，避免改善前者却损害后者。
         retrieval_queries = _build_broad_retrieval_queries(
             material_dir=material_dir,
             learning_goal=learning_goal,
         )
-        # retrieval_queries = (
-        #     (
-        #         "goal",
-        #         f"查找与以下学习目标直接相关的核心原理、技术机制和正文论述："
-        #         f"{learning_goal}",
-        #     ),
-        #     (
-        #         "structure",
-        #         "查找资料各主要章节的核心知识、章节依赖关系和推荐学习顺序。"
-        #         "优先返回正文和章节小结，避免只返回目录、前言或阅读指引。",
-        #     ),
-        #     (
-        #         "implementation",
-        #         "查找具体技术实现、算法过程、架构设计、代码说明和工程约束。"
-        #         "优先返回包含实现细节的正文。",
-        #     ),
-        #     (
-        #         "practice",
-        #         "查找资料中的实验、实践步骤、代码仓库说明、运行条件和验收标准。",
-        #     ),
-        # )
 
         for query_id, _ in retrieval_queries:
-            logger.info(
+            logger.debug(
                 "RAG 检索任务：query_id=%s",
                 query_id,
             )
@@ -584,7 +657,7 @@ def analyse_materials(material_dir: str, learning_goal: str) -> tuple[str, str]:
         else:
             targeted_evidence = "没有达到相关性阈值的资料。"
 
-        logger.info(
+        logger.debug(
             "多查询上下文生成完成：direct_hits=%d expanded_documents=%d "
             "context_chars=%d",
             len(merged_hits),
@@ -627,15 +700,27 @@ def analyse_materials(material_dir: str, learning_goal: str) -> tuple[str, str]:
     llm = create_llm()
     messages = [
         SystemMessage(content=(
-            "你是资料结构与学习路径分析智能体。"
-            "仅依据提供的资料概览和证据工作，不得编造。\n\n"
+            "你是资料分析智能体，负责理解资料内容、知识结构和前置依赖。"
+            "你不是最终学习计划制定者；后续会有独立的学习计划智能体"
+            "根据你的分析生成按天安排。\n"
+            # 即使用户目标中包含“制定学习计划”，本阶段也只处理资料分析部分，
+            # 避免资料分析智能体和计划智能体重复生成两份计划。
+            "即使学习目标包含“制定计划”“安排天数”等要求，"
+            "你也只分析制定计划所需的资料依据，不生成按天或按周的完整计划。\n"
+            "你可以说明知识之间的先后依赖和推荐学习顺序，"
+            "但不得分配具体日期、周次、每日任务或时间比例。\n\n"
 
+            "仅依据提供的资料概览和证据工作，不得编造。\n\n"
+            f"{LEARNING_ACTIVITY_RULES}\n"
             "请输出以下结构：\n"
             "1. 资料定位：主题、目标读者、覆盖范围；\n"
             "2. 知识结构：按基础层、核心层、进阶层组织；\n"
             "3. 前置依赖：说明为什么必须先学；\n"
             "4. 核心模块：每个模块说明概念、价值、学习难点；\n"
-            "5. 实践项目：说明可执行步骤和验收标准；\n"
+            # 分析适合怎样学，不在本阶段生成按天计划。
+            "5. 学习活动依据：说明哪些内容适合阅读、比较或练习；"
+            "只有目标需要且资料支持时才建议实践项目，"
+            "不适用时明确说明，不为填满结构而编造项目；\n"
             "6. 推荐学习顺序：明确先后依赖；\n"
             "7. 证据覆盖与不足：先列出本次实际覆盖的章节或主题，"
             "再列出与学习目标直接相关、但当前证据无法支持的内容。\n\n"
@@ -655,6 +740,10 @@ def analyse_materials(material_dir: str, learning_goal: str) -> tuple[str, str]:
             "引用格式必须根据文件类型和读取方式选择：\n"
             "- PDF向量证据使用 [source=..., page=..., chunk=...]；\n"
             "- MD、TXT向量证据使用 [source=..., chunk=...]；\n"
+            "- 直接摘录的 TXT、MD、PY 使用返回的 citation 字段，"
+            "例如 [source=notes.md]，不得补造 chunk；\n"
+            "scope=prefix 表示只读取开头，"
+            "truncated=true 时不得声称已读取完整文件。\n"
             "- Python源码为全量读取，只使用 [source=...]，"
             "不得编造 page 或 chunk；\n"
             "- 来自确定性资料概览的内容可以只标注 source，"
@@ -688,9 +777,7 @@ def analyse_materials_agentic(material_dir:str, learning_goal:str) -> tuple[str,
     list_learning_files / read_learning_file 等工具。
     """
     logger.info(
-        "【资料分析智能体（Agentic）】开始，material_dir=%s, goal=%s",
-        material_dir,
-        learning_goal,
+        "开始资料分析：mode=agent",
     )
 
     # 工具在本轮运行时绑定material_dir，模型不再负责生成root_dir。
@@ -704,103 +791,223 @@ def analyse_materials_agentic(material_dir:str, learning_goal:str) -> tuple[str,
     messages = [
         SystemMessage(content=(
             "你是资料分析智能体，可以使用工具查看资料目录。"
-            f"资料目录固定为：{material_dir}，调用工具时请使用这个路径作为 root_dir。"
+            "资料目录已由程序绑定，调用工具时不要提供 root_dir。"
             "先调用 list_learning_files 理解语料范围。"
+            "读取文件时使用清单返回的相对路径，不使用绝对路径。"
             "对于大文件、PDF或跨文件概念，调用retrieve_learning_context。"
             "该工具的queries参数可以一次接收多条查询；"
-            "每轮调用前应先汇总当前所有资料缺口，合并近义query，"
-            "不要为每一个关键词单独调用一次工具。"
+            "每次只检索当前必要的缺口，合并近义query；"
+            "已知且互补、无需等待彼此结果的查询可以批量提交。"
+            "需要先看结果才能确定的下一问，应收到结果后再决定。"
             "neighbor_window=0表示只取命中块，"
             "neighbor_window=1表示读取命中块前后各一个chunk。"
-            "只有需要查看某个小文件原文时才调用read_learning_file。"
-            "最终结论的每个关键判断都要标注工具结果里的 source/page/chunk，"
-            "没有证据就明确说资料不足，不要编造。"
+            "只有需要查看某个小文件原文时才调用read_learning_file。\n"
+            
+            f"{LEARNING_ACTIVITY_RULES}\n"
+
+            "最终分析中的每个核心模块、知识依赖、实现说明和"
+            "推荐学习顺序，都必须紧跟一个真实资料引用。\n"
+            "引用格式根据实际读取方式选择：\n"
+            "- PDF向量证据：[source=文件名.pdf, page=单个页码, chunk=单个编号]\n"
+            "- MD、TXT向量证据：[source=文件名.md, chunk=单个编号]\n"
+            "- 直接读取的 TXT、MD、PY：复制工具返回的 citation 字段；\n"
+            "- Python全量源码：[source=文件名.py]。\n"
+            "直接读取未提供 chunk 时，不得根据标题或段落自行编号。\n"
+            "scope=prefix 表示只读取开头；"
+            "truncated=true 时不得声称已读取完整文件。\n"
+            
+            # 引用必须能由程序稳定解析，因此禁止自由发挥格式。
+            "不得使用“来源：xxx p1/chunk2”、脚注、URL或其他自定义格式"
+            "代替上述格式；不得使用page=1-3、chunk=4-6等范围引用。\n"
+            "一条判断如果需要多个证据，应分别写出多个完整引用，"
+            "不能把多个page或chunk合并在一个引用中。\n"
+            
+            "目录、前言和README概述只能支持资料定位或章节结构判断，"
+            "不能替代正文来证明具体实现方式或技术结论。\n"
+            "没有证据就明确说本轮证据不足，不要编造。"
             "确认信息足够后，直接输出最终分析结果，不要再调用工具。"
+
+            # 防止模型把用户总体目标中的“学习计划”也在本阶段完成。
+            "最终输出只能是资料分析和推荐学习先后关系，"
+            "不能包含按天、按周的完整学习计划；"
+            "具体计划由下游学习计划智能体负责。"
         )),
         HumanMessage(content=f"学习目标：{learning_goal}"),
     ]
-    tool_trace: list[str] = []            # 累计工具调用的输入输出，作为可复用的资料上下文（已去重）
-    seen_signatures: set[tuple] = set()   # 已记录过的 (工具名, 参数) 组合，用于给 tool_trace 去重
-    call_signatures: list[tuple] = []     # 按时间顺序记录每次调用的签名，用于检测"连续3次相同调用"
+    tool_trace: list[str] = []
+    seen_signatures: set[tuple[str, str]] = set()
+    tool_counts: dict[str, int] = {}
+    executed_calls = 0
+    no_progress_rounds = 0
+    total_limit = settings.agent_max_tool_calls
+
+    # 提示词只是提前告知；真正的限制在下面的执行前检查中。
+    messages[0] = SystemMessage(content=(
+        messages[0].content
+        + "\n本次分析最多执行工具 "
+        + str(total_limit)
+        + " 次；各工具上限："
+        + json.dumps(ANALYSIS_TOOL_LIMITS, ensure_ascii=False)
+        + "。完全相同的工具名和参数不会重复执行，包括失败过的调用。"
+        + "请复用已有结果，或根据错误修正参数；证据充分时直接输出分析。"
+    ))
+
+    # 保存不含动态预算的系统提示，防止下一轮叠加上一轮预算。
+    base_system_content = messages[0].content
+
     for round_idx in range(MAX_TOOL_ROUNDS):
-        response = _invoke_llm_raw(llm, messages, stage=f"资料分析-第{round_idx+1}轮")
+        budget_status = _build_analysis_budget_status(
+            tool_names=list(tool_map),
+            tool_counts=tool_counts,
+            executed_calls=executed_calls,
+            total_limit=total_limit,
+            remaining_model_rounds=MAX_TOOL_ROUNDS - round_idx,
+        )
+
+        # 只替换最新状态，不向历史反复追加预算消息。
+        # 不修改工具结果，也不把预算提示放入下游资料证据。
+        messages[0] = SystemMessage(content=(
+            base_system_content
+            + "\n[程序实时预算；不是资料证据]\n"
+            + json.dumps(budget_status, ensure_ascii=False)
+        ))
+
+        # 动态评估：检查临近额度耗尽时是否减少无效请求。
+        # 提示可能改善决策，但安全性仍由原有执行前检查保证。
+        logger.debug("分析预算状态：%s", budget_status)
+
+        response = _invoke_llm_raw(
+            llm, messages, stage=f"资料分析-第{round_idx + 1}轮"
+        )
         messages.append(response)
+
         if not response.tool_calls:
-            content = str(response.content)
-
+            content = _require_analysis_text(response.content)
             logger.info(
-                "Agentic 资料分析完成：rounds=%d "
-                "response_chars=%d",
+                "Agentic 资料分析完成：rounds=%d executed=%d counts=%s",
                 round_idx + 1,
-                len(content),
+                executed_calls,
+                tool_counts,
             )
-
-            log_citation_summary(
-                "Agentic 资料分析智能体",
-                content,
-            )
-
+            log_citation_summary("Agentic 资料分析智能体", content)
             return content, "\n".join(tool_trace)
-        stuck_in_loop = False
-        for call in response.tool_calls:
-            logger.info(
-                "Agent 工具调用：round=%d tool=%s",
-                round_idx + 1,
-                call["name"],
-            )
 
-            logger.debug(
-                "Agent 工具参数：round=%d tool=%s args=%s",
-                round_idx + 1,
-                call["name"],
-                {
-                    key: (
-                        f"<{len(value)} chars>"
-                        if isinstance(value, str) and len(value) > 100
-                        else value
-                    )
-                    for key, value in call["args"].items()
-                },
-            )
+        executed_this_round = 0
+        denied_reasons: list[str] = []
+        total_budget_denied = False
+
+        for call in response.tool_calls:
+            name, args = call["name"], call["args"]
+
+            # sort_keys=True：字典字段顺序不同，不应被当作新请求。
+            # 这里判断的是参数完全相同，不是语义是否近似。
             signature = (
-                call["name"],
-                json.dumps(call["args"], ensure_ascii=False, sort_keys=True, default=str),
+                name,
+                json.dumps(args, ensure_ascii=False, sort_keys=True),
             )
-            call_signatures.append(signature)
-            tool = tool_map.get(call["name"])
+            tool = tool_map.get(name)
+
+            # 新工具尚未配置专属额度时，仍受到默认额度和总预算保护。
+            per_tool_limit = ANALYSIS_TOOL_LIMITS.get(name, 4)
+            reason = None
+
             if tool is None:
-                messages.append(
-                    ToolMessage(
-                        content=(
-                            f"没有名为 {call['name']} 的工具，"
-                            f"可选工具：{', '.join(tool_map)}"
-                        ),
-                        tool_call_id=call["id"],
-                    )
+                reason = "unknown_tool"
+            elif signature in seen_signatures:
+                reason = "duplicate_tool_call"
+            elif executed_calls >= total_limit:
+                reason = "tool_budget_exceeded"
+                total_budget_denied = True
+            elif tool_counts.get(name, 0) >= per_tool_limit:
+                reason = "per_tool_budget_exceeded"
+
+            if reason is not None:
+                denied_reasons.append(reason)
+                result = json.dumps({
+                    "ok": False,
+                    "error": reason,
+                    "tool": name,
+                    "executed": False,
+                    "executed_total": executed_calls,
+                    "total_limit": total_limit,
+                    "tool_executed": tool_counts.get(name, 0),
+                    "tool_limit": per_tool_limit,
+                    "available_tools": list(tool_map),
+                    "instruction": (
+                        "复用已有结果、修正参数或使用其他工具；"
+                        "证据充分时输出分析。"
+                    ),
+                }, ensure_ascii=False)
+
+                logger.warning(
+                    "分析工具拒绝：tool=%s reason=%s executed=%d/%d",
+                    name, reason, executed_calls, total_limit,
                 )
             else:
-                # 这里需要做异常保护，如遇到工具内部抛异常，IO错误等
+                # invoke 抛异常也消耗一次执行额度：失败同样有成本。
+                # 在执行前登记签名，避免同参失败触发无意义的盲目重试。
+                seen_signatures.add(signature)
+                executed_calls += 1
+                executed_this_round += 1
+                tool_counts[name] = tool_counts.get(name, 0) + 1
+
+                logger.debug(
+                    "分析工具执行：tool=%s total=%d/%d tool_count=%d/%d",
+                    name,
+                    executed_calls,
+                    total_limit,
+                    tool_counts[name],
+                    per_tool_limit,
+                )
+
                 try:
-                    result = tool.invoke(call["args"])
+                    result = str(tool.invoke(args))
                 except Exception as exc:
                     result = f"工具执行出错：{exc}"
-                    logger.warning("工具 %s 执行异常：%s", call["name"], exc)
-                messages.append(ToolMessage(content=str(result), tool_call_id=call["id"]))
-                if signature not in seen_signatures:
-                    tool_trace.append(f"--- 调用 {call['name']}({call['args']}) ---\n{result}")
-                    seen_signatures.add(signature)
-            if len(call_signatures) >= 3 and call_signatures[-1] == call_signatures[-2] == call_signatures[-3]:
-                logger.warning("检测到连续 3 次完全相同的工具调用 %s，提前终止以避免死循环", signature)
-                stuck_in_loop = True
-                break
-        if stuck_in_loop:
-            return (
-                "检测到模型反复以相同参数调用同一工具，已提前终止分析；"
-                "请检查资料目录内容，或简化学习目标后重试。",
-                "\n".join(tool_trace),
+                    logger.warning("工具 %s 执行异常：%s", name, exc)
+
+                # 被拒绝的请求不是资料证据，不追加到下游资料上下文。
+                tool_trace.append(
+                    f"--- 调用 {name}({args}) ---\n{result}"
+                )
+
+            # 同批中被拒绝的调用也必须回传结果，不能漏掉 tool_call_id。
+            messages.append(ToolMessage(
+                content=result,
+                tool_call_id=call["id"],
+            ))
+
+        # 处理完这一批的所有调用，再结束，保持调用与结果一一对应。
+        if total_budget_denied:
+            raise AnalysisExecutionError(
+                "tool_budget_exceeded",
+                "资料分析请求超过工具总执行预算；未生成学习计划。",
             )
-    logger.warning("达到最大工具调用轮数，强制结束")
-    return "多次调用工具后仍未生成结论，请检查资料目录或简化学习目标", "\n".join(tool_trace)
+
+        # 这里只判断有无实际执行，不等同于“获得了新知识”。
+        # 动态评估：正常任务若频繁停止，应检查拒绝原因和工具上限。
+        no_progress_rounds = (
+            no_progress_rounds + 1
+            if executed_this_round == 0
+            else 0
+        )
+
+        if no_progress_rounds >= settings.agent_max_no_progress_rounds:
+            reason = (
+                "repeated_tool_call"
+                if set(denied_reasons) == {"duplicate_tool_call"}
+                else "tool_no_progress"
+            )
+            raise AnalysisExecutionError(
+                reason,
+                "资料分析连续多轮只有被拒绝的工具请求；未生成学习计划。",
+            )
+
+    logger.warning("达到最大模型轮数，停止资料分析")
+    raise AnalysisExecutionError(
+        "model_round_limit",
+        "资料分析达到模型轮数上限，尚未生成结论；未生成学习计划。",
+    )
 
 def _limit_evidence_context(
     context: str,
@@ -829,6 +1036,7 @@ def create_study_plan(
     *,
     material_dir: str,
     mode: str,
+    plan_evidence_trace: dict | None = None,
 ) -> str:
     """计划智能体：根据第一位智能体的结论制作可执行计划。
 
@@ -852,7 +1060,20 @@ def create_study_plan(
     - 补充检索增加很多token但计划不变时，应降低调用上限。
     """
     settings = get_settings()
+    logger.info("开始生成学习计划：mode=%s days=%d", mode, days)
     plan_evidence = _limit_evidence_context(material_context)
+
+    if plan_evidence_trace is not None:
+        # 保存真正放入模型输入的证据，不用未截断全文冒充实际输入。
+        # 含资料正文，只写入本地实验结果，不打印到普通日志。
+        plan_evidence_trace.update({
+            "trace_version": "plan-evidence-v1",
+            "initial_evidence": plan_evidence,
+            "initial_context_chars": len(material_context),
+            "initial_evidence_chars": len(plan_evidence),
+            "tool_observations": [],
+            "requests": [],
+        })
 
     retrieval_available = needs_rag(material_dir)
 
@@ -903,16 +1124,31 @@ def create_study_plan(
             "你将同时获得资料分析结果和带来源的原始证据。\n\n"
 
             f"{retrieval_rules}\n"
-
+            f"{LEARNING_ACTIVITY_RULES}\n"
+            
             "最终计划必须遵守：\n"
-            "1. 学习顺序必须体现前置依赖，由基础到进阶；\n"
-            "2. 每天最多两个任务，每个任务必须包含学习内容、"
-            "具体步骤和可验证产出；\n"
+            "1. 学习顺序应体现资料中的前置关系；"
+            "若没有明确依赖，按用户目标组织，"
+            "不要编造“必须先学”的关系；\n"
+            "2. 每天最多两个任务，每个任务包含学习内容、"
+            "具体行动和与目标匹配的完成标志；"
+            "阅读理解可以通过简短解释或自检完成，"
+            "不要求每个任务都有作品、代码或测试；\n"
+            # 真实位置不等于支持论断；重点观察错页、错块是否减少。
             "3. 每个任务必须引用至少一个真实证据位置："
             "PDF向量证据使用[source=..., page=..., chunk=...]；"
             "MD、TXT向量证据使用[source=..., chunk=...]；"
+            "直接摘录的TXT、MD、PY复制原始证据中的citation字段，"
+            "不得将资料分析自行生成的chunk编号当作真实位置；"
+            "摘录标记truncated=true时，不得将其描述为完整文件；"
             "Python全量源码只使用[source=...]，"
-            "不得编造页码或chunk编号；\n"
+            "不得编造页码或chunk编号。"
+            "引用附近的具体论断必须由被引用块的正文直接支持；"
+            "不得因为同一章节或相邻页面相关，就沿用其他块的来源标记。"
+            "引用的source、page和chunk必须来自同一条证据，不能拼接。"
+            "资料分析中的引用不是已核验结论，必须对照原始证据确认；"
+            "若只有资料分析的概述而没有支持该细节的原始证据，"
+            "应在允许时补充检索，否则明确证据不足，不能猜测来源。\n"
             "4. 不得把资料没有明确说明的字段、规范或参数"
             "描述成官方要求；\n"
             "5. 如果某项内容是根据资料做出的教学设计，"
@@ -929,8 +1165,32 @@ def create_study_plan(
         )),
     ]
 
+    def capture_evidence_before_request(stage: str) -> None:
+        """记录本次准备提供的证据，不保存AI回复或私有思维链。"""
+        if plan_evidence_trace is None:
+            return
+
+        observations = [
+            {
+                "tool_call_id": message.tool_call_id,
+                "content": message.content,
+            }
+            for message in messages
+            if isinstance(message, ToolMessage)
+        ]
+
+        # 初始证据始终保留；工具观察包括成功结果、拒绝和失败反馈。
+        # 同一轮的内容只保存一份，用数量标记每次请求看到的范围。
+        plan_evidence_trace["tool_observations"] = observations
+        plan_evidence_trace["requests"].append({
+            "stage": stage,
+            "state": "prepared_for_request",
+            "tool_observation_count": len(observations),
+        })
+
     # 没有RAG语料时，不绑定无效的语义检索工具。
     if retrieval_tool is None:
+        capture_evidence_before_request("学习计划智能体")
         content = _invoke_llm(
             create_llm(),
             messages,
@@ -950,13 +1210,13 @@ def create_study_plan(
     seen_retrieval_signatures: set[str] = set()
 
     while True:
+        stage = f"学习计划智能体-检索判断{used_retrieval_calls + 1}"
+        capture_evidence_before_request(stage)
+
         response = _invoke_llm_raw(
             tool_llm,
             messages,
-            stage=(
-                "学习计划智能体"
-                f"-检索判断{used_retrieval_calls + 1}"
-            ),
+            stage=stage,
         )
         messages.append(response)
 
@@ -1038,7 +1298,7 @@ def create_study_plan(
                 )
             )
 
-            logger.info(
+            logger.debug(
                 "规划补充检索：mode=%s used=%d limit=%d "
                 "args=%s result_chars=%d",
                 mode,
@@ -1060,6 +1320,7 @@ def create_study_plan(
                 ))
             )
 
+            capture_evidence_before_request("学习计划智能体-强制收束")
             content = _invoke_llm(
                 create_llm(),
                 messages,
@@ -1097,13 +1358,38 @@ def _validate_material_dir(material_dir:str) -> str | None:
         )
     return None
 
-def run_learning_assistant(material_dir: str, learning_goal: str, days: int, mode: str) -> tuple[str, str, str]:
+def run_learning_assistant(
+    material_dir: str,
+    learning_goal: str,
+    days: int,
+    mode: str,
+    *,
+    plan_evidence_trace: dict | None = None,
+    orchestrator: str = "legacy",
+) -> tuple[str, str, str]:
     """按顺序运行两个智能体，并返回“分析结果、学习计划、资料上下文”。
 
     若资料目录不存在或无法定位到有效资料，会在第一步（资料分析）就终止：
     返回的 analysis 是给用户的指导文字，plan 与 material_context 为空字符串，
     不会再调用 create_study_plan 进入计划生成。
     """
+    if orchestrator not in {"legacy", "langgraph"}:
+        raise ValueError(
+            "orchestrator 必须为 legacy 或 langgraph"
+        )
+
+    if orchestrator == "langgraph":
+        # 延迟导入：旧流程无需加载图模块，也避免初始化时循环导入。
+        from .orchestration import run_learning_graph
+
+        return run_learning_graph(
+            material_dir,
+            learning_goal,
+            days,
+            mode,
+            plan_evidence_trace=plan_evidence_trace,
+        )
+
     guidance = _validate_material_dir(material_dir)
     if guidance is not None:
         logger.warning("资料目录校验未通过，提前终止：%s", guidance)
@@ -1120,6 +1406,10 @@ def run_learning_assistant(material_dir: str, learning_goal: str, days: int, mod
             learning_goal,
         )
 
+    # 同时保护 pipeline 和 agent，以及未来新增的分析实现。
+    # 动态评估：分析无效时，create_study_plan 的调用次数必须为 0。
+    analysis = _require_analysis_text(analysis)
+
     # 两种模式共用同一个规划入口和同一个多query检索工具，
     # 区别仅在程序允许的额外检索次数：
     # pipeline固定为1次，agent默认最多6次。
@@ -1130,5 +1420,6 @@ def run_learning_assistant(material_dir: str, learning_goal: str, days: int, mod
         days,
         material_dir=material_dir,
         mode=mode,
+        plan_evidence_trace=plan_evidence_trace,
     )
     return analysis, plan, material_context

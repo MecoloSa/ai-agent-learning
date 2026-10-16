@@ -1,6 +1,11 @@
 # Secrets and local configuration
 .env
 .env.*
+!.env.example
+# Local credentials / private keys (public templates stay tracked).
+*.pem
+*.key
+credentials*.json
 
 # Python and uv
 __pycache__/
@@ -10,6 +15,12 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+build/
+dist/
+*.egg-info/
+.coverage
+.coverage.*
+htmlcov/
 
 # Runtime output
 *.log
@@ -18,6 +29,9 @@ __pycache__/
 
 # IDE metadata
 .idea/
+.vscode/
+.DS_Store
+Thumbs.db
 
 # Pytest temporary output
 .pytest-tmp/
@@ -28,5 +42,31 @@ AGENTS.md
 # 临时文件目录
 tmp/
 
+# 在线评测结果可能包含资料片段和模型输出，只保留本地结果。
+.evaluation-results/
+
 src/ai_agent/eval/
 src/ai_agent/架构优化/
+
+# Generated personal learning plans; keep a future directory README if added.
+/plans/*
+!/plans/README.md
+
+# Historical implementation drafts duplicate the maintained code in src/ and tests/.
+/docs/proposals/
+
+# Keep evaluation source, reports and aggregate metrics; exclude raw local artifacts.
+/src/ai_agent/evaluation/experiments/**/*.jsonl
+/src/ai_agent/evaluation/experiments/**/inputs*.json
+/src/ai_agent/evaluation/experiments/**/*trace*.json
+/src/ai_agent/evaluation/experiments/**/integration_smoke.json
+/src/ai_agent/evaluation/**/outputs/
+/src/ai_agent/evaluation/**/results/
+/src/ai_agent/evaluation/**/*.local.*
+
+# Online case manifests contain machine-specific material paths.
+# Publish the matching *.example.jsonl templates instead of these local copies.
+/tests/fixtures/evaluation/end_to_end_smoke.jsonl
+/tests/fixtures/evaluation/end_to_end_citation_check.jsonl
+/tests/fixtures/evaluation/learning_goal_alignment.jsonl
+/tests/fixtures/evaluation/rag_cases.jsonl

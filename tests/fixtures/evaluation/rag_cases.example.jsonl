@@ -1,0 +1,4 @@
+{"case_id":"book-e2e-001","material_dir":"src/ai_agent/eval/ai_agent_book","learning_goal":"基于书中 ReAct 循环和上下文消融实验，为初学者制定学习计划：理解决策、工具行动、观察结果与下一轮决策的关系，解释缺少工具结果为什么可能盲目循环、缺少历史为什么可能重复操作。实践产出应是消息轨迹示意和终止条件测试，不要求输出模型私有思维链。","days":2}
+{"case_id":"book-e2e-002","material_dir":"src/ai_agent/eval/ai_agent_book","learning_goal":"基于书中温哥华时间和天气工具示例，制定 Function Calling 学习计划，覆盖模型生成 tool_calls、应用执行工具、追加 assistant 与 tool 消息、tool_call_id 对应关系，以及无 tool_calls 时结束。区分模型 API 调用次数和工具执行次数，并解释有数据依赖时为什么需要串行。","days":3}
+{"case_id":"book-e2e-003","material_dir":"src/ai_agent/eval/ai_agent_book","learning_goal":"基于书中 RAG 文档分块章节，制定比较固定大小、递归结构感知与语义切分的学习计划。说明块过小、过大以及重叠的取舍，安排一个可复现的切分对比实验，要求记录检索效果和上下文长度，不把书中的建议范围描述为固定最优参数。","days":3}
+{"case_id":"book-e2e-004","material_dir":"src/ai_agent/eval/ai_agent_book","learning_goal":"基于 HelloAgents 的 WorkingMemory 实现，制定理解工作记忆的学习计划，重点覆盖纯内存存储、容量管理、TTL 清理和重启后丢失的行为。安排使用假时间或可控时间验证过期清理的实验，区分会话临时记忆与跨会话持久化记忆。","days":2}

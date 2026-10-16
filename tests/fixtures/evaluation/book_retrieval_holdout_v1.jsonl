@@ -1,0 +1,3 @@
+{"case_id":"holdout-few-shot-cache","question":"AI-Agents-in-Depth 为什么不建议每次请求都动态挑选 few-shot 示例？","gold_evidence":[{"source":"AI-Agents-in-Depth-zh-CN.pdf","pages":[56]}]}
+{"case_id":"holdout-rubric","question":"AI-Agents-in-Depth 如何区分好的 Rubric 与坏的 Rubric？一票否决项起什么作用？","gold_evidence":[{"source":"AI-Agents-in-Depth-zh-CN.pdf","pages":[176]}]}
+{"case_id":"holdout-rag-memory","question":"Hello-Agents 第八章的 Web 智能文档问答系统组合了哪两个工具？","gold_evidence":[{"source":"Hello-Agents-V1.0.3-20260717.pdf","pages":[305]}]}

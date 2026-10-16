@@ -1,0 +1,9 @@
+{"case_id":"book-rag-001","question":"ReAct 循环包含哪三个环节？缺少工具执行结果和历史消息分别可能导致什么问题？","gold_evidence":[{"source":"AI-Agents-in-Depth-zh-CN.pdf","pages":[21]}]}
+{"case_id":"book-rag-002","question":"HelloAgents 的 WorkingMemory 使用什么存储方式？如何处理过期和容量限制？系统重启后这些记忆是否保留？","gold_evidence":[{"source":"Hello-Agents-V1.0.3-20260717.pdf","pages":[274]}]}
+{"case_id":"book-rag-part4-exact","question":"Hello-Agents 开篇“第四部分：综合案例进阶”介绍了哪三类实践应用？","gold_evidence":[{"source":"Hello-Agents-V1.0.3-20260717.pdf","pages":[4]}]}
+{"case_id":"book-rag-part4-paraphrase","question":"Hello-Agents 在整体结构介绍中，综合案例进阶部分安排了哪些实际应用？","gold_evidence":[{"source":"Hello-Agents-V1.0.3-20260717.pdf","pages":[4]}]}
+{"case_id":"book-rag-part4-online-query-1","question":"第四部分 综合案例进阶","gold_evidence":[{"source":"Hello-Agents-V1.0.3-20260717.pdf","pages":[4]}]}
+{"case_id":"book-rag-part4-online-query-2","question":"综合案例进阶 实践应用","gold_evidence":[{"source":"Hello-Agents-V1.0.3-20260717.pdf","pages":[4]}]}
+{"case_id":"book-rag-part4-actual-title","question":"Hello-Agents 写给读者的建议中，“第四部分（实战篇）”希望读者通过什么方式巩固所学？","gold_evidence":[{"source":"Hello-Agents-V1.0.3-20260717.pdf","pages":[9]}]}
+{"case_id":"book-rag-graduation-project","question":"Hello-Agents 教程开篇要求读者在毕业设计中构建怎样的应用？","gold_evidence":[{"source":"Hello-Agents-V1.0.3-20260717.pdf","pages":[5]}]}
+{"case_id":"book-rag-failure-attribution-toc","question":"AI-Agents-in-Depth 的目录在哪里列出“6.5.2 失败归因：从整条轨迹定位首个错误”？","gold_evidence":[{"source":"AI-Agents-in-Depth-zh-CN.pdf","pages":[5]}]}

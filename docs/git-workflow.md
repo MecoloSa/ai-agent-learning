@@ -1,5 +1,7 @@
 # Git 与 GitHub 分支工作流操作手册
 
+> 2026-10-16更新：本项目按当前用户约定采用 `develop` 日常开发、`product` 稳定发布，保留既有 `main`。请优先执行 [当前develop/product操作步骤](git-workflow-develop-product.md)；下面关于main作为生产分支的内容保留为历史通用参考，不是当前项目约定。
+
 本文档适用于本项目当前的单人开发阶段，也为以后通过 Pull Request（PR）协作预留了流程。
 
 ## 1. 推荐的分支模型
