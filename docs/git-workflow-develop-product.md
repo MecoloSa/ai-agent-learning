@@ -81,7 +81,7 @@ git config --local push.default simple
 git status
 git diff
 .venv/Scripts/python.exe -X utf8 -m pytest tests/test_rag.py -q
-git add src/ai_agent/rag.py tests/test_rag.py
+git add src/ai_agent/retrieval/rag.py tests/test_rag.py
 git diff --cached
 git commit -m "experiment: compare retrieval behavior"
 git push

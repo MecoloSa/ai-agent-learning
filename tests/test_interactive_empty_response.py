@@ -12,7 +12,7 @@ import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 
 import ai_agent.main as main_module
-from ai_agent.tools import build_list_material_files_tool
+from ai_agent.resources.tools import build_list_material_files_tool
 
 
 @pytest.mark.parametrize("call_limit", [1, 2])

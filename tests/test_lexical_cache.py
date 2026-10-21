@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 from langchain_core.documents import Document
 
-from ai_agent.rag import LearningRAG, RAGError
+from ai_agent.retrieval.rag import LearningRAG, RAGError
 
 
 class FakeStore:

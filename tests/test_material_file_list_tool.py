@@ -11,8 +11,8 @@ import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 
 import ai_agent.main as main_module
-from ai_agent.execution_guard import tool_result_succeeded
-from ai_agent.tools import build_list_material_files_tool
+from ai_agent.runtime.execution_guard import tool_result_succeeded
+from ai_agent.resources.tools import build_list_material_files_tool
 
 
 def test_file_list_filters_and_paginates(tmp_path):

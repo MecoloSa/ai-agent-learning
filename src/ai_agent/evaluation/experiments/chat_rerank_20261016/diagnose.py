@@ -5,7 +5,7 @@ import time
 
 from openai import OpenAI
 from run import HERE, MODELS, PROMPT, read_jsonl, validate_order, write_json
-from ai_agent.network import get_ipv4_chat_client
+from ai_agent.infrastructure.network import get_ipv4_chat_client
 
 cases = json.loads((HERE / "inputs.local.json").read_text(encoding="utf-8"))
 traces = read_jsonl(HERE / "traces.jsonl")

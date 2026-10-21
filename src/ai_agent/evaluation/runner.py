@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Callable
 from uuid import uuid4
 
-from ai_agent.agents import run_learning_assistant
+from ai_agent.runtime.agents import run_learning_assistant
 
 CITATION_PATTERN = re.compile(r"\[source=[^\]\n]+\]")
 
@@ -48,6 +48,10 @@ class RunRecord:
     # 每个运行拥有独立字典；正文仅留在本地评测文件，便于追查错引。
     plan_evidence_trace: dict = field(default_factory=dict)
 
+    # 默认值保持旧调用兼容；空轨迹表示未取得，不表示运行失败。
+    orchestrator: str = "legacy"
+    workflow_trace: dict = field(default_factory=dict)
+
 def load_cases(path: Path) -> list[EvalCase]:
     # 函数签名：接收一个 JSONL 文件路径，返回 EvalCase 列表
     cases: list[EvalCase] = []
@@ -72,24 +76,45 @@ def load_cases(path: Path) -> list[EvalCase]:
 
 # 运行单个测评案例
 def run_case(
-        case: EvalCase,
-        mode: str,
-        *, # 后面的参数必须用关键字方式传递
-        execute: Callable | None = None,
+    case: EvalCase,
+    mode: str,
+    *,
+    execute: Callable | None = None,
+    orchestrator: str = "legacy",
 ) -> RunRecord:
-    # 如果调用者传了自定义的 execute 就用它
+    if orchestrator not in {"legacy", "langgraph"}:
+        raise ValueError("orchestrator 必须为 legacy 或 langgraph")
+
+    if execute is not None and orchestrator != "legacy":
+        # 四参数替身不接收编排参数，不能冒充真实图运行。
+        raise ValueError(
+            "自定义 execute 仅支持 legacy；"
+            "测试图时请替换具体业务步骤"
+        )
+
     started = time.perf_counter()
     plan_evidence_trace: dict = {}
+    workflow_receiver: dict = {}
 
     try:
         if execute is None:
-            # 默认真实业务启用审计，错误时也保留已经收集到的证据。
+            options = {
+                "plan_evidence_trace": plan_evidence_trace,
+            }
+
+            if orchestrator == "langgraph":
+                options.update(
+                    orchestrator="langgraph",
+                    workflow_trace=workflow_receiver,
+                )
+
+            # legacy不新增关键字，兼容已有严格签名的测试替身。
             analysis, plan, _ = run_learning_assistant(
                 case.material_dir,
                 case.learning_goal,
                 case.days,
                 mode,
-                plan_evidence_trace=plan_evidence_trace,
+                **options,
             )
         else:
             # 保持已有假执行函数的四参数接口；空轨迹不代表没有证据。
@@ -123,6 +148,10 @@ def run_case(
         plan=plan,
         error=error,
         plan_evidence_trace=plan_evidence_trace,
+        orchestrator=orchestrator,
+        # 接收字典外层的latest_run仅用于传递；
+        # 结果文件直接保存该次图记录，减少一层嵌套。
+        workflow_trace=workflow_receiver.get("latest_run", {}),
     )
 
 def write_record(records: list[RunRecord], output: Path) -> None:
@@ -141,6 +170,12 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cases", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--orchestrator",
+        choices=["legacy", "langgraph"],
+        default="legacy",
+        help="外层编排方式；默认legacy，langgraph同时记录节点轨迹",
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="显示详细调用、检索与预算日志")
     parser.add_argument(
         "--modes",
@@ -150,23 +185,31 @@ def main() -> None:
     )
     args = parser.parse_args()
     from ai_agent.config import get_settings
-    from ai_agent.console_logging import configure_console_logging
+    from ai_agent.infrastructure.console_logging import configure_console_logging
     configure_console_logging(verbose=args.verbose, log_level=get_settings().log_level)
     # 提前检查，避免调用付费模型后才发现结果文件已经存在。
     if args.output.exists():
         parser.error(f"结果文件已存在，请换新文件名：{args.output}")
     cases = load_cases(args.cases)
     records = [
-        run_case(case, mode)
+        run_case(case, mode, orchestrator=args.orchestrator)
         for case in cases
         for mode in args.modes
     ]
     write_record(records, args.output)
 
     for record in records:
+        workflow_status = record.workflow_trace.get(
+            "status", "not_recorded"
+        )
+        failed_node = record.workflow_trace.get("failed_node")
+
         print(
             f"{record.case_id} | mode={record.mode} | "
+            f"orchestrator={record.orchestrator} | "
             f"success={record.success} | "
+            f"workflow={workflow_status} | "
+            f"failed_node={failed_node} | "
             f"耗时={record.latency_ms / 1000:.1f}秒 | "
             f"error={record.error}"
         )

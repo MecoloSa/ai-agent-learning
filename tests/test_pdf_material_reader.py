@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import ai_agent.pdf_materials as pdf_module
+import ai_agent.resources.pdf_materials as pdf_module
 
 
 def mock_pdf(monkeypatch, tmp_path, texts, *, encrypted=False):

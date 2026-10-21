@@ -10,15 +10,15 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-import ai_agent.learning_commands as commands_module
-import ai_agent.state_store as store_module
-from ai_agent.learning_state import (
+import ai_agent.learning.learning_commands as commands_module
+import ai_agent.persistence.state_store as store_module
+from ai_agent.learning.learning_state import (
     LearningState,
     LearningTask,
     UserFeedback,
     apply_user_feedback,
 )
-from ai_agent.state_store import (
+from ai_agent.persistence.state_store import (
     save_learning_state,
     load_learning_state,
 )

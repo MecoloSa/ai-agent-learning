@@ -10,7 +10,7 @@ import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 
 import ai_agent.main as main_module
-from ai_agent.execution_guard import resolve_execution_requirement
+from ai_agent.runtime.execution_guard import resolve_execution_requirement
 
 
 @pytest.mark.parametrize(

@@ -10,13 +10,13 @@ import sys
 import pytest
 
 import ai_agent.main as main_module
-import ai_agent.learning_commands as commands_module
-from ai_agent.learning_state import (
+import ai_agent.learning.learning_commands as commands_module
+from ai_agent.learning.learning_state import (
     LearningState,
     LearningTask,
     UserFeedback,
 )
-from ai_agent.state_store import save_learning_state, load_learning_state
+from ai_agent.persistence.state_store import save_learning_state, load_learning_state
 
 
 def make_state():

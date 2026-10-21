@@ -11,15 +11,15 @@ import pytest
 from pydantic import ValidationError
 
 import ai_agent.main as main_module
-import ai_agent.learning_commands as commands_module
-from ai_agent.learning_state import (
+import ai_agent.learning.learning_commands as commands_module
+from ai_agent.learning.learning_state import (
     LearningState,
     LearningTask,
     UserFeedback,
     apply_user_feedback,
     update_learning_context,
 )
-from ai_agent.state_store import save_learning_state, load_learning_state
+from ai_agent.persistence.state_store import save_learning_state, load_learning_state
 
 
 def make_state():
@@ -99,14 +99,14 @@ def test_register_and_feedback_preserve_revision_metadata():
     assert updated.tasks_need_review is True
 
 
-def test_v2_snapshot_preserves_current_and_initial_context(tmp_path):
+def test_current_snapshot_preserves_current_and_initial_context(tmp_path):
     state = update_learning_context(make_state(), plan_markdown="新计划")
-    path = tmp_path / "v2.json"
+    path = tmp_path / "current.json"
     save_learning_state(state, path)
 
     assert json.loads(path.read_text(encoding="utf-8"))[
         "schema_version"
-    ] == "learning-state-v2"
+    ] == "learning-state-v5"
     assert load_learning_state(path) == state
 
 
@@ -138,6 +138,7 @@ def test_chat_update_register_save_and_restore(monkeypatch, tmp_path):
         '/feedback {"task_id":"task-001","text":"已读完。",'
         '"activity_status":"completed"}',
         "请修改目标和计划",
+        "y",
         "解释新计划",
         '/task {"task_id":"task-002","title":"比较观点"}',
         "/save-state",
@@ -306,7 +307,7 @@ def test_visualize_context_update_and_restore(tmp_path):
     print(f"\n保存格式：{saved_data['schema_version']}")
     show_state_change("阶段5：保存后重新读取", registered, restored)
 
-    assert saved_data["schema_version"] == "learning-state-v2"
+    assert saved_data["schema_version"] == "learning-state-v5"
     assert restored == registered
 
     print("\n全部检查通过：初始版本保留、当前版本更新、任务未重置、恢复一致。")
@@ -381,7 +382,7 @@ def test_visualize_context_update_and_restore(tmp_path):
     print(f"\n保存格式：{saved_data['schema_version']}")
     show_state_change("阶段5：保存后重新读取", registered, restored)
 
-    assert saved_data["schema_version"] == "learning-state-v2"
+    assert saved_data["schema_version"] == "learning-state-v5"
     assert restored == registered
 
     print("\n全部检查通过：初始版本保留、当前版本更新、任务未重置、恢复一致。")

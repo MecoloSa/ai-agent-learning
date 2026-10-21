@@ -13,9 +13,9 @@ import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 
 import ai_agent.main as main_module
-import ai_agent.pdf_materials as pdf_module
-from ai_agent.execution_guard import tool_result_succeeded
-from ai_agent.tools import build_read_pdf_pages_tool
+import ai_agent.resources.pdf_materials as pdf_module
+from ai_agent.runtime.execution_guard import tool_result_succeeded
+from ai_agent.resources.tools import build_read_pdf_pages_tool
 
 
 def prepare_pdf(monkeypatch, tmp_path, text):

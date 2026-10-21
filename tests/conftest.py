@@ -32,7 +32,7 @@ def isolate_existing_session_autosave(request, monkeypatch, tmp_path):
         "create_llm_with_tools",
         lambda tools: object(),
     )
-    from ai_agent.state_store import save_learning_state
+    from ai_agent.persistence.state_store import save_learning_state
 
     def save_to_temporary_directory(state):
         path = tmp_path / f"auto-{uuid4().hex}.json"
@@ -42,6 +42,6 @@ def isolate_existing_session_autosave(request, monkeypatch, tmp_path):
     # 只重定向自动保存，不干扰已有手动保存测试的路径设置。
     monkeypatch.setattr(
         main_module,
-        "save_state_snapshot",
-        save_to_temporary_directory,
+        "save_current_learning_state",
+        lambda state, _path: (save_to_temporary_directory)(state),
     )

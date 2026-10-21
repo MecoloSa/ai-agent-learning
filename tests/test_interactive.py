@@ -116,7 +116,7 @@ def test_interactive_prompt_contains_shared_pdf_citation_rules(monkeypatch):
     """有无语义检索，PDF按页读取都应使用同一份引用约定。"""
     from types import SimpleNamespace
 
-    from ai_agent.prompt_rules import PDF_CITATION_RULES
+    from ai_agent.runtime.prompt_rules import PDF_CITATION_RULES
 
     # 使用最小配置，测试提示词拼接，不创建模型或访问资料。
     monkeypatch.setattr(
@@ -148,7 +148,7 @@ def test_interactive_prompt_contains_material_access_rules(monkeypatch):
     """无论是否启用语义检索，都应保留按已知位置直接读取的规则。"""
     from types import SimpleNamespace
 
-    from ai_agent.prompt_rules import MATERIAL_ACCESS_RULES
+    from ai_agent.runtime.prompt_rules import MATERIAL_ACCESS_RULES
 
     monkeypatch.setattr(
         main_module,

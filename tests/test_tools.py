@@ -19,14 +19,14 @@ from pathlib import Path
 
 import pytest
 
-from ai_agent.tools import (
+from ai_agent.resources.tools import (
     list_learning_files,
     read_learning_file,
     search_learning_files,
     summarize_text_statistics,
     MAX_CHARS_PER_FILE,
 )
-from ai_agent.materials import safe_material_path
+from ai_agent.resources.materials import safe_material_path
 
 
 # ---------------------------------------------------------------------------

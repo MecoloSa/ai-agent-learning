@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from langchain_core.messages import AIMessage
 
-import ai_agent.memory as memory_module
-from ai_agent.memory import ConversationMemory
+import ai_agent.persistence.memory as memory_module
+from ai_agent.persistence.memory import ConversationMemory
 
 
 def contents(messages):

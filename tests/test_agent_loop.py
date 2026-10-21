@@ -6,7 +6,7 @@ import json
 from langchain_core.messages import AIMessage, ToolMessage
 
 import pytest
-import ai_agent.agents as agents_module
+import ai_agent.runtime.agents as agents_module
 
 
 def make_tool_call(

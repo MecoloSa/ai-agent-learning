@@ -5,8 +5,8 @@ import builtins
 import pytest
 
 import ai_agent.main as main_module
-from ai_agent.learning_commands import handle_learning_command
-from ai_agent.learning_state import LearningState
+from ai_agent.learning.learning_commands import handle_learning_command
+from ai_agent.learning.learning_state import LearningState
 
 
 def make_state():

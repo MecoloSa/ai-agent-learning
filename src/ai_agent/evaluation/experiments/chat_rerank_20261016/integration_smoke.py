@@ -5,7 +5,7 @@ import time
 from langchain_core.documents import Document
 
 from ai_agent.config import get_settings
-from ai_agent.rag import LearningRAG
+from ai_agent.retrieval.rag import LearningRAG
 from ai_agent.evaluation.pdf_rag_eval import evaluate_case
 from ai_agent.evaluation.rerank_probe import configured_rerank_options, rerank_candidates
 from run import HERE, write_json

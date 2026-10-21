@@ -9,9 +9,9 @@ from types import SimpleNamespace
 import pytest
 from langchain_core.documents import Document
 
-from ai_agent.lexical_retrieval import CharBigramBM25
-from ai_agent.rag import LearningRAG, RAGError
-from ai_agent.retrieval_fusion import fuse_rrf_candidates
+from ai_agent.retrieval.lexical_retrieval import CharBigramBM25
+from ai_agent.retrieval.rag import LearningRAG, RAGError
+from ai_agent.retrieval.retrieval_fusion import fuse_rrf_candidates
 
 
 def make_doc(source, text, chunk=0, **metadata):

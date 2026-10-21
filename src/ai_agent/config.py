@@ -14,8 +14,8 @@ from langchain_core.embeddings import Embeddings
 from dotenv import load_dotenv
 from pydantic import SecretStr
 
-from .embeddings import BatchedDashScopeEmbeddings
-from .network import get_ipv4_chat_client
+from ai_agent.retrieval.embeddings import BatchedDashScopeEmbeddings
+from ai_agent.infrastructure.network import get_ipv4_chat_client
 
 # 运行产物应属于整个项目，而不是取决于终端/IDE 当时的工作目录。
 # config.py 位于 <project>/src/ai_agent，因此 parents[2] 是 pyproject.toml 所在目录。

@@ -9,13 +9,13 @@ import builtins
 import pytest
 
 import ai_agent.main as main_module
-from ai_agent.learning_state import (
+from ai_agent.learning.learning_state import (
     LearningState,
     LearningTask,
     UserFeedback,
     apply_user_feedback,
 )
-from ai_agent.state_store import save_learning_state, load_learning_state
+from ai_agent.persistence.state_store import save_learning_state, load_learning_state
 
 
 def make_state():
@@ -35,7 +35,7 @@ def test_equal_content_does_not_save(monkeypatch):
         raise AssertionError("内容相同时不应保存")
 
     monkeypatch.setattr(
-        main_module, "save_state_snapshot", unexpected_save,
+        main_module, "save_current_learning_state", lambda state, _path: (unexpected_save)(state),
     )
 
     assert main_module._autosave_learning_change(before, after) is None
@@ -55,8 +55,8 @@ def test_changed_state_is_saved_without_mutation(monkeypatch, tmp_path):
 
     monkeypatch.setattr(
         main_module,
-        "save_state_snapshot",
-        lambda state: save_learning_state(state, path),
+        "save_current_learning_state",
+        lambda state, _path: (lambda state: save_learning_state(state, path))(state),
     )
 
     assert main_module._autosave_learning_change(before, after) == path
@@ -79,7 +79,7 @@ def test_failed_autosave_keeps_memory_and_warns(monkeypatch, capsys):
     def fail_save(state):
         raise OSError("模拟磁盘写入失败")
 
-    monkeypatch.setattr(main_module, "save_state_snapshot", fail_save)
+    monkeypatch.setattr(main_module, "save_current_learning_state", lambda state, _path: (fail_save)(state))
 
     assert main_module._autosave_learning_change(before, after) is None
 
@@ -145,7 +145,7 @@ def test_recovery_saves_only_actual_changes(
     # 模型职责被假函数替代；仍执行真实确认、状态校验和保存流程。
     monkeypatch.setattr(main_module, "create_llm", lambda **kwargs: object())
     monkeypatch.setattr(main_module, "propose_user_feedback", fake_proposal)
-    monkeypatch.setattr(main_module, "save_state_snapshot", fake_save)
+    monkeypatch.setattr(main_module, "save_current_learning_state", lambda state, _path: (fake_save)(state))
 
     updated = main_module.run_state_recovery_session(state)
 
@@ -179,7 +179,7 @@ def test_interactive_task_registration_autosaves(monkeypatch, tmp_path):
     monkeypatch.setattr(builtins, "input", lambda _: next(inputs))
     monkeypatch.setattr(main_module, "needs_rag", lambda _: False)
     monkeypatch.setattr(main_module, "create_llm", lambda: object())
-    monkeypatch.setattr(main_module, "save_state_snapshot", fake_save)
+    monkeypatch.setattr(main_module, "save_current_learning_state", lambda state, _path: (fake_save)(state))
     monkeypatch.setattr(
         main_module, "_invoke_interactive_turn", unexpected_chat,
     )

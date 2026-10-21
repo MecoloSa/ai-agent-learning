@@ -190,7 +190,7 @@ def main() -> None:
     parser.add_argument("-v", "--verbose", action="store_true", help="显示逐项判定、规则变化和调试日志")
     args = parser.parse_args()
     from ai_agent.config import get_settings
-    from ai_agent.console_logging import configure_console_logging
+    from ai_agent.infrastructure.console_logging import configure_console_logging
     configure_console_logging(verbose=args.verbose, log_level=get_settings().log_level)
     output = resolve_project_path(args.output)
     if output.exists():

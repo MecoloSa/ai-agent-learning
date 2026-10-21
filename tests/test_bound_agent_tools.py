@@ -8,7 +8,7 @@ import pytest
 import json
 from pydantic import ValidationError
 
-import ai_agent.tools as tools_module
+import ai_agent.resources.tools as tools_module
 
 
 @pytest.fixture

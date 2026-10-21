@@ -1,0 +1,29 @@
+{
+  "schema_version": "learning-state-v4",
+  "state": {
+    "learning_goal": "区分演示资料中的正常结束与保护性停止",
+    "plan_markdown": "# 原学习计划\n\n任务1：阅读reading_notes.md，10分钟。完成标志：读完两类停止的定义。\n任务2：复述两类停止的区别，15分钟。完成标志：分别说明是谁决定停止。\n任务3：画出工具结果返回后的两种流转，10分钟。完成标志：图中区分模型结束与控制程序停止。\n\n原安排总计35分钟。任务1已完成阅读，后续原安排25分钟。",
+    "context_revision": 1,
+    "tasks_need_review": false,
+    "tasks": [
+      {
+        "task_id": "read-001",
+        "title": "阅读reading_notes.md中的两类停止定义",
+        "activity_status": "completed",
+        "understanding_status": "self_reported_unclear",
+        "latest_feedback": "已经读完，但仍不理解正常结束与保护性停止的区别。",
+        "feedback_source": "user_report"
+      },
+      {
+        "task_id": "explain-002",
+        "title": "复述两类停止的区别",
+        "activity_status": "not_started"
+      },
+      {
+        "task_id": "draw-003",
+        "title": "画出两种停止的流转",
+        "activity_status": "not_started"
+      }
+    ]
+  }
+}

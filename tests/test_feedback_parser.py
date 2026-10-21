@@ -9,10 +9,10 @@ import builtins
 import pytest
 from langchain_core.messages import AIMessage
 
-import ai_agent.feedback_parser as parser_module
+import ai_agent.learning.feedback_parser as parser_module
 import ai_agent.main as main_module
-from ai_agent.agents import LLMInvocationError
-from ai_agent.learning_state import LearningState, LearningTask
+from ai_agent.runtime.agents import LLMInvocationError
+from ai_agent.learning.learning_state import LearningState, LearningTask
 
 
 def make_state():

@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from ai_agent import agents as steps
+from ai_agent.runtime import agents as steps
 
 
 @pytest.mark.parametrize("orchestrator", ["legacy", "langgraph"])

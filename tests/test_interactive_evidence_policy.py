@@ -92,7 +92,7 @@ def test_plan_update_keeps_on_demand_policy(monkeypatch, tmp_path):
 
     # 只用于资料类型扫描；模型与 RAG 已被替换，不解析这个空文件。
     (material_root / "book.pdf").touch()
-    inputs = iter(["请修改计划", "解释新计划", "exit"])
+    inputs = iter(["请修改计划", "y", "解释新计划", "exit"])
     requests = []
 
     class FakeTool:
@@ -124,8 +124,8 @@ def test_plan_update_keeps_on_demand_policy(monkeypatch, tmp_path):
     monkeypatch.setattr(main_module, "_invoke_interactive_turn", fake_turn)
     monkeypatch.setattr(
         main_module,
-        "save_state_snapshot",
-        lambda state: tmp_path / "unused.json",
+        "save_current_learning_state",
+        lambda state, _path: (lambda state: tmp_path / "unused.json")(state),
     )
 
     result = main_module.run_interactive_session(

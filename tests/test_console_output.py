@@ -7,9 +7,11 @@ import pytest
 from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, HumanMessage
 
-from ai_agent import agents, main as main_module, rag as rag_module
-from ai_agent.console_logging import configure_console_logging
-from ai_agent import console_logging
+from ai_agent.runtime import agents
+from ai_agent import main as main_module
+from ai_agent.retrieval import rag as rag_module
+from ai_agent.infrastructure.console_logging import configure_console_logging
+from ai_agent.infrastructure import console_logging
 
 
 @pytest.mark.parametrize("verbose,configured,expected", [

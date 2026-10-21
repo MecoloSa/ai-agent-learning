@@ -7,7 +7,7 @@
 import pytest
 from langchain_core.documents import Document
 
-from ai_agent.lexical_retrieval import CharBigramBM25, _terms
+from ai_agent.retrieval.lexical_retrieval import CharBigramBM25, _terms
 from ai_agent.evaluation.lexical_probe import (
     CharBigramBM25 as ProbeBM25,
 )
@@ -98,7 +98,7 @@ def test_queries_do_not_pollute_metadata_or_rebuild_terms(monkeypatch):
     ]
     retriever = CharBigramBM25(documents)
 
-    import ai_agent.lexical_retrieval as lexical_module
+    import ai_agent.retrieval.lexical_retrieval as lexical_module
 
     original_terms = lexical_module._terms
     tokenized_texts = []

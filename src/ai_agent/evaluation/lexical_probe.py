@@ -11,7 +11,7 @@ from collections import defaultdict
 from langchain_core.documents import Document
 
 # 保留旧导入路径；已有评测入口和测试不必同时迁移。
-from ..lexical_retrieval import CharBigramBM25, _terms
+from ai_agent.retrieval.lexical_retrieval import CharBigramBM25, _terms
 
 
 def _rank_rrf_chunks(

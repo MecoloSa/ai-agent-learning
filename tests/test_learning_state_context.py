@@ -11,8 +11,8 @@ import json
 import pytest
 
 import ai_agent.main as main_module
-from ai_agent.learning_context import build_learning_state_message
-from ai_agent.learning_state import LearningState, LearningTask, UserFeedback
+from ai_agent.learning.learning_context import build_learning_state_message
+from ai_agent.learning.learning_state import LearningState, LearningTask, UserFeedback
 
 
 def test_state_message_contains_tasks_without_full_plan():
@@ -104,8 +104,8 @@ def test_chat_receives_current_state_after_update_and_cancel(
     # 本测试只验证上下文传递；磁盘可靠性由保存测试单独验证。
     monkeypatch.setattr(
         main_module,
-        "save_state_snapshot",
-        lambda state: tmp_path / "unused.json",
+        "save_current_learning_state",
+        lambda state, _path: (lambda state: tmp_path / "unused.json")(state),
     )
 
     main_module.run_interactive_session(

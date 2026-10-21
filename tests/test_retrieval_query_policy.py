@@ -10,8 +10,8 @@ import pytest
 from langchain_core.documents import Document
 
 import ai_agent.main as main_module
-import ai_agent.tools as tools_module
-import ai_agent.rag as rag_module
+import ai_agent.resources.tools as tools_module
+import ai_agent.retrieval.rag as rag_module
 
 
 def test_interactive_prompt_allows_focused_and_adaptive_queries(monkeypatch):

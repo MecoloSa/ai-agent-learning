@@ -23,7 +23,7 @@ from pathlib import Path
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from ai_agent.config import create_llm
-from ai_agent.agents import invoke_llm_response
+from ai_agent.runtime.agents import invoke_llm_response
 from ai_agent.evaluation.source_evidence import load_source_evidence
 
 
@@ -283,7 +283,7 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="只提取并保存证据，不调用模型")
     args = parser.parse_args()
     from ai_agent.config import get_settings
-    from ai_agent.console_logging import configure_console_logging
+    from ai_agent.infrastructure.console_logging import configure_console_logging
     configure_console_logging(verbose=args.verbose, log_level=get_settings().log_level)
 
     if (args.llm or args.dry_run) and args.cases is None:

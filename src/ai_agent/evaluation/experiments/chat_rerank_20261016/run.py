@@ -18,8 +18,8 @@ from openai import OpenAI
 from ai_agent.config import PROJECT_ROOT, create_embeddings, get_settings
 from ai_agent.evaluation.lexical_probe import CharBigramBM25, rrf_candidate_documents
 from ai_agent.evaluation.metrics import recall_at_k, reciprocal_rank
-from ai_agent.network import get_ipv4_chat_client
-from ai_agent.reranking import rerank_api_base_address, rerank_candidates
+from ai_agent.infrastructure.network import get_ipv4_chat_client
+from ai_agent.retrieval.reranking import rerank_api_base_address, rerank_candidates
 
 HERE = Path(__file__).resolve().parent
 MODELS = ["qwen3.8-flash", "qwen3.6-flash"]

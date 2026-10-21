@@ -11,7 +11,7 @@ import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 
 import ai_agent.main as main_module
-from ai_agent.tools import build_read_material_lines_tool
+from ai_agent.resources.tools import build_read_material_lines_tool
 
 
 def test_reader_tool_returns_actual_lines(tmp_path):

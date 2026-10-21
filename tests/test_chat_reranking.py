@@ -7,7 +7,7 @@ import pytest
 from langchain_core.documents import Document
 
 from ai_agent.config import get_settings
-from ai_agent.reranking import configured_rerank_options, parse_chat_rerank_order, rerank_candidates
+from ai_agent.retrieval.reranking import configured_rerank_options, parse_chat_rerank_order, rerank_candidates
 
 
 def documents(n=6):

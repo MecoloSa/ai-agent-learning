@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 import ai_agent.config as config_module
-from ai_agent.agents import _get_model_name
+from ai_agent.runtime.agents import _get_model_name
 
 
 @pytest.fixture

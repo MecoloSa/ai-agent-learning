@@ -7,7 +7,7 @@
 import pytest
 
 import ai_agent.main as main_module
-from ai_agent.execution_guard import (
+from ai_agent.runtime.execution_guard import (
     resolve_execution_requirement,
     supports_execution_check,
     tool_result_succeeded,

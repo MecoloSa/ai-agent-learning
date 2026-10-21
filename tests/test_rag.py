@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from langchain_core.documents import Document
 
-from ai_agent.rag import LearningRAG
+from ai_agent.retrieval.rag import LearningRAG
 
 
 class FakeStore:

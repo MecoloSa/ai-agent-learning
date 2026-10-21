@@ -8,7 +8,7 @@ import pytest
 
 from langchain_core.messages import AIMessage
 
-import ai_agent.agents as agents_module
+import ai_agent.runtime.agents as agents_module
 
 
 def test_queries_do_not_infer_topic_from_file_suffix(tmp_path):

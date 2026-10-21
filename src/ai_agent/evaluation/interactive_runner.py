@@ -28,9 +28,9 @@ from ai_agent.config import (
     get_settings,
 )
 from ai_agent.main import _invoke_interactive_turn
-from ai_agent.materials import safe_material_path
-from ai_agent.prompt_rules import PDF_CITATION_RULES, MATERIAL_ACCESS_RULES
-from ai_agent.tools import (
+from ai_agent.resources.materials import safe_material_path
+from ai_agent.runtime.prompt_rules import PDF_CITATION_RULES, MATERIAL_ACCESS_RULES
+from ai_agent.resources.tools import (
     build_read_pdf_pages_tool,
     build_list_material_files_tool,
     build_retrieve_learning_context_tool,
@@ -340,7 +340,7 @@ def main() -> None:
         help="提供语义检索工具，用于先定位再按页核对",
     )
     args = parser.parse_args()
-    from ai_agent.console_logging import configure_console_logging
+    from ai_agent.infrastructure.console_logging import configure_console_logging
     configure_console_logging(verbose=args.verbose, log_level=get_settings().log_level)
 
     if not args.llm:

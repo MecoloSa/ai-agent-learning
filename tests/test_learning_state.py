@@ -7,7 +7,7 @@
 import pytest
 from pydantic import ValidationError
 
-from ai_agent.learning_state import (
+from ai_agent.learning.learning_state import (
     LearningState,
     LearningTask,
     UserFeedback,

@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 from langchain_core.documents import Document
 
-import ai_agent.rag as rag_module
+import ai_agent.retrieval.rag as rag_module
 
 
 @pytest.fixture

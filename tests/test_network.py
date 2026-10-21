@@ -4,8 +4,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from ai_agent import config, network
-from ai_agent.embeddings import BatchedDashScopeEmbeddings
+from ai_agent import config
+from ai_agent.infrastructure import network
+from ai_agent.retrieval.embeddings import BatchedDashScopeEmbeddings
 
 
 @pytest.fixture(autouse=True)
@@ -72,7 +73,7 @@ def test_embedding_keeps_query_document_semantics_and_batching(monkeypatch, enab
     import dashscope
     calls = []
     session = object()
-    monkeypatch.setattr("ai_agent.embeddings.get_ipv4_embedding_session", lambda: session)
+    monkeypatch.setattr("ai_agent.retrieval.embeddings.get_ipv4_embedding_session", lambda: session)
     def fake_call(**kw):
         calls.append(kw)
         texts = kw["input"]

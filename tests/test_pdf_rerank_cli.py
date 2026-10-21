@@ -8,7 +8,7 @@ import pytest
 from langchain_core.documents import Document
 
 from ai_agent.evaluation import pdf_rag_eval as module
-from ai_agent.reranking import RerankOutcome
+from ai_agent.retrieval.reranking import RerankOutcome
 
 
 @pytest.mark.parametrize("flags,backend,model", [

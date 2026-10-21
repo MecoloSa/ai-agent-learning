@@ -6,8 +6,8 @@
 
 import pytest
 
-import ai_agent.materials as materials_module
-from ai_agent.materials import read_material_lines
+import ai_agent.resources.materials as materials_module
+from ai_agent.resources.materials import read_material_lines
 
 
 @pytest.mark.parametrize("suffix", [".txt", ".md", ".py"])

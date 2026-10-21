@@ -21,7 +21,7 @@ from ai_agent.evaluation.answer_pair_probe import (
     run_answer_pair,
     summarize_answer_pairs,
 )
-from ai_agent.rag import LearningRAG
+from ai_agent.retrieval.rag import LearningRAG
 from ai_agent.evaluation.metrics import recall_at_k, reciprocal_rank
 from ai_agent.evaluation.lexical_probe import (
     CharBigramBM25,
@@ -428,7 +428,7 @@ def main() -> None:
         if not rerank_options["api_key"] or not rerank_options["base_address"]:
             parser.error("所选重排后端缺少 API Key 或服务地址")
 
-    from ai_agent.console_logging import configure_console_logging
+    from ai_agent.infrastructure.console_logging import configure_console_logging
     configure_console_logging(verbose=args.verbose, log_level=settings.log_level)
 
     material_dir = resolve_project_path(args.materials)

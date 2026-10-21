@@ -135,7 +135,7 @@ def test_pdf_prompt_requires_verbatim_tool_citation():
         PROMPT_VERSION,
         SYSTEM_PROMPT,
     )
-    from ai_agent.prompt_rules import PDF_CITATION_RULES
+    from ai_agent.runtime.prompt_rules import PDF_CITATION_RULES
 
     assert PROMPT_VERSION == "isolated-pdf-v3"
     assert PDF_CITATION_RULES in SYSTEM_PROMPT
@@ -149,7 +149,7 @@ def test_pdf_prompt_requires_verbatim_tool_citation():
 @pytest.mark.parametrize("with_file_list", [False, True])
 def test_run_case_optional_file_list_tools(with_file_list):
     """验证工具分发与提示词接入，不模拟在线模型的选择能力。"""
-    from ai_agent.prompt_rules import MATERIAL_ACCESS_RULES
+    from ai_agent.runtime.prompt_rules import MATERIAL_ACCESS_RULES
 
     captured = {}
     pdf_tool = SimpleNamespace(name="read_pdf_pages")
