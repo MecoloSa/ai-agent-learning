@@ -92,6 +92,9 @@ def test_analysis_receives_learning_activity_rules(
         agents_module.LEARNING_ACTIVITY_RULES
         in captured[0].content
     )
+    if mode == "pipeline":
+        assert "前置依赖：仅列出资料明确支持的先后关系" in captured[0].content
+        assert "前置依赖：说明为什么必须先学" not in captured[0].content
 
 
 @pytest.mark.parametrize("mode", ["pipeline", "agent"])

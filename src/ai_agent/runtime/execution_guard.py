@@ -80,10 +80,13 @@ _SUCCESS_CHECKERS: dict[str, Callable[[str], bool]] = {
     "read_material_lines": _structured_result_succeeded,
     "list_material_files": _structured_result_succeeded,
     "read_pdf_pages": _structured_result_succeeded,
+    "read_feedback_history": _structured_result_succeeded,
+    "read_confirmation_history": _structured_result_succeeded,
 
     # 此处的成功仅指提议被接收为pending，不代表确认或保存。
     "propose_learning_feedback": _structured_result_succeeded,
     "propose_task_creation": _structured_result_succeeded,
+    "propose_task_cancellation": _structured_result_succeeded,
 }
 
 

@@ -292,9 +292,9 @@ def build_retrieve_learning_context_tool(
         result = rag_instance.format_documents(
             documents,
 
-            # 单次补充检索最多使用总RAG预算的一半，
-            # 防止Agent连续调用时工具结果无限累积。
-            # 不同场景使用不同预算。
+            # 限制本次格式化证据正文，不是会话累计余额。
+            # 调用方可显式指定；未指定时默认取RAG预算的一半。
+            # 多次工具结果仍会在本轮上下文中累积，另受调用次数约束。
             max_context_chars=effective_context_limit,
         )
 

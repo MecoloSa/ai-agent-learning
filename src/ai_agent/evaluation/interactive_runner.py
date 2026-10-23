@@ -45,7 +45,7 @@ from .interactive_metrics import (
 )
 
 
-PROMPT_VERSION = "isolated-pdf-v3"
+PROMPT_VERSION = "isolated-pdf-v4-general-rules"
 SYSTEM_PROMPT = (
     "你正在参加隔离的PDF资料核对实验，没有学习计划或历史对话。"
     "需要核对指定页时实际调用read_pdf_pages，不得假装执行。"

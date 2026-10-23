@@ -13,9 +13,13 @@ logger = logging.getLogger("ai_agent.plan_validation")
 _TASK = re.compile(r"^任务\s*\d+(?:\s*[:：、.．]|\s|$)")
 _DAY = re.compile(r"^(?:Day\s*\d+\b|第\s*\d+\s*天)", re.I)
 
+# 字段名后允许一组括号说明，不把排版变体误判为字段缺失。
+# 保留两个捕获组：字段名、字段正文，后续解析逻辑不变。
 _FIELD = re.compile(
     r"^(学习内容|学习主题|具体行动|学习行动|完成标志|验收标准|"
-    r"证据位置|参考资料)\s*[:：]\s*(.*)$"
+    r"证据位置|参考资料)\s*"
+    r"(?:（[^（）\n]*）|\([^()\n]*\))?"
+    r"\s*[:：]\s*(.*)$"
 )
 
 _ALIASES = {

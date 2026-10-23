@@ -11,6 +11,8 @@ import unicodedata
 from uuid import uuid4
 from pydantic import Field
 
+from ai_agent.learning.confirmation import read_confirmation
+
 from ai_agent.learning.learning_state import (
     LearningState,
     LearningTask,
@@ -99,7 +101,11 @@ def commit_task_creation(
 def review_task_creation(
     state: LearningState,
     pending: PendingTaskCreation,
+    *,
+    confirmation_trace: dict[str, str] | None = None,
 ) -> tuple[LearningState, str]:
+    if confirmation_trace is not None:
+        confirmation_trace.clear()
     # 提前构造候选只做校验；未确认时绝不替换外层state。
     try:
         candidate = commit_task_creation(state, pending)
@@ -117,12 +123,10 @@ def review_task_creation(
     print("默认进度=not_started，理解情况=unknown。")
     print("只增加登记任务，不修改学习计划，不表示已开始或完成。")
 
-    try:
-        answer = input("输入y确认创建，其他输入取消：")
-    except EOFError:
-        answer = ""
-
-    if answer.strip().lower() != "y":
+    if not read_confirmation(
+        "输入y确认创建，其他输入取消：",
+        trace=confirmation_trace,
+    ):
         print("[任务创建取消] 未新增任务。")
         return state, "cancelled"
 

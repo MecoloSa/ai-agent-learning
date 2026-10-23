@@ -82,7 +82,7 @@ def test_record_original_text_and_keep_v5_compatible(tmp_path):
     assert original.feedback_records == ()
     path = tmp_path / "feedback.json"
     save_learning_state(confirmed, path)
-    assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == "learning-state-v5"
+    assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == "learning-state-v7"
     restored = load_learning_state(path)
     assert restored.feedback_records == confirmed.feedback_records
     data = json.loads(build_learning_state_message(restored).content)

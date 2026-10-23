@@ -137,14 +137,18 @@ def test_pdf_prompt_requires_verbatim_tool_citation():
     )
     from ai_agent.runtime.prompt_rules import PDF_CITATION_RULES
 
-    assert PROMPT_VERSION == "isolated-pdf-v3"
+    assert PROMPT_VERSION in {"isolated-pdf-v3", "isolated-pdf-v4-general-rules"}
     assert PDF_CITATION_RULES in SYSTEM_PROMPT
 
     # 保留关键约定的检查，避免公共字符串被误删后测试仍通过。
-    assert "逐字复制对应页面返回的citation字段值" in SYSTEM_PROMPT
-    assert "[source=book.pdf, page=5]" in SYSTEM_PROMPT
-    assert "不要添加citation:前缀" in SYSTEM_PROMPT
-    assert "不要把page改成physical_page" in SYSTEM_PROMPT
+    assert "逐字复制" in SYSTEM_PROMPT and "citation" in SYSTEM_PROMPT
+    assert "不改字段名" in SYSTEM_PROMPT or "不要把page改成physical_page" in SYSTEM_PROMPT
+    assert "不加前缀" in SYSTEM_PROMPT or "不要添加citation:前缀" in SYSTEM_PROMPT
+    assert "补造chunk" in SYSTEM_PROMPT
+    assert "未成功取得页面时不生成该页引用" in SYSTEM_PROMPT or "没有成功取得页面时" in SYSTEM_PROMPT
+    # 验证协议而非要求某个示例文件/页码；清理后的版本还应去掉该示例。
+    if PROMPT_VERSION == "isolated-pdf-v4-general-rules":
+        assert "[source=book.pdf, page=5]" not in SYSTEM_PROMPT
 
 @pytest.mark.parametrize("with_file_list", [False, True])
 def test_run_case_optional_file_list_tools(with_file_list):

@@ -131,7 +131,7 @@ def test_saved_memory_reaches_next_session_without_strategy_argument(
     )
     restored = load_learning_state(saved[-1])
     assert restored.conversation_memory.strategy == strategy
-    assert json.loads(saved[-1].read_text(encoding="utf-8"))["schema_version"] == "learning-state-v5"
+    assert json.loads(saved[-1].read_text(encoding="utf-8"))["schema_version"] == "learning-state-v7"
     answers = iter(["刚才的代号是什么？", "exit"])
     monkeypatch.setattr(builtins, "input", lambda _: next(answers))
     main_module.run_interactive_session(

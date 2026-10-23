@@ -36,7 +36,7 @@ def test_interactive_prompt_allows_focused_and_adaptive_queries(monkeypatch):
 
     assert "聚焦问题默认只提交一个当前必要查询" in prompt
     assert "必须先看结果才能确定的下一问" in prompt
-    assert "目录条目" in prompt
+    assert "证据用途" in prompt and "独立理解" in prompt
     assert "所有工具合计最多调用3次" in prompt
 
 

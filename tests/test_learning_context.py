@@ -106,7 +106,7 @@ def test_current_snapshot_preserves_current_and_initial_context(tmp_path):
 
     assert json.loads(path.read_text(encoding="utf-8"))[
         "schema_version"
-    ] == "learning-state-v5"
+    ] == "learning-state-v7"
     assert load_learning_state(path) == state
 
 
@@ -307,7 +307,7 @@ def test_visualize_context_update_and_restore(tmp_path):
     print(f"\n保存格式：{saved_data['schema_version']}")
     show_state_change("阶段5：保存后重新读取", registered, restored)
 
-    assert saved_data["schema_version"] == "learning-state-v5"
+    assert saved_data["schema_version"] == "learning-state-v7"
     assert restored == registered
 
     print("\n全部检查通过：初始版本保留、当前版本更新、任务未重置、恢复一致。")
@@ -382,7 +382,7 @@ def test_visualize_context_update_and_restore(tmp_path):
     print(f"\n保存格式：{saved_data['schema_version']}")
     show_state_change("阶段5：保存后重新读取", registered, restored)
 
-    assert saved_data["schema_version"] == "learning-state-v5"
+    assert saved_data["schema_version"] == "learning-state-v7"
     assert restored == registered
 
     print("\n全部检查通过：初始版本保留、当前版本更新、任务未重置、恢复一致。")

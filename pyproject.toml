@@ -5,6 +5,7 @@ description = "Local learning-material analysis and study-plan agent"
 readme = "src/ai_agent/README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "anyio>=4,<5",
     "dashscope>=1.27.4",
     "get-settings>=0.1.1",
     "httpx>=0.28.1",
@@ -13,6 +14,7 @@ dependencies = [
     "langchain-community>=0.4.2",
     "langchain-experimental>=0.4.2",
     "langchain-mcp-adapters>=0.3.2",
+    "mcp>=1.29,<2",
     "langchain-ollama>=1.1.0",
     "langchain-openai>=1.4.1",
     "langchain-text-splitters>=1.1.2",

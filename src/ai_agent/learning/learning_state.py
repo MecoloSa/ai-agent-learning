@@ -67,7 +67,17 @@ class LearningTask(StateModel):
     activity_status: ActivityStatus = "not_started"
     understanding_status: UnderstandingStatus = "unknown"
     latest_feedback: str = ""
-    feedback_source: Literal["none", "user_report"] = "none"    #Literal 类型：feedback_source 使用 typing.Literal，严格限制取值
+    feedback_source: Literal["none", "user_report"] = "none"
+
+    # 取消表示不再安排执行，不覆盖此前做到了哪里、是否理解的历史。
+    is_cancelled: bool = Field(default=False, strict=True)
+    cancellation_reason: str = ""
+
+    @model_validator(mode="after")
+    def check_cancellation(self) -> LearningTask:
+        if self.is_cancelled != bool(self.cancellation_reason):
+            raise ValueError("取消任务必须保留原因，未取消任务不能带取消原因")
+        return self
 
 def learning_today() -> date:
     """学习安排按北京时间判断当天，避免操作系统时区差异。"""
@@ -75,7 +85,11 @@ def learning_today() -> date:
 
 
 class FeedbackRecord(StateModel):
-    """已确认原话及来源范围；不是客观掌握证明或计划变更授权。"""
+    """已确认反馈及来源：quote保留用户原话，text保存确认采用的正文。
+
+    普通反馈两者相同；更正正文可综合旧记录与新原话，不能视作用户直接引语。
+    这不是客观掌握证明或计划变更授权。
+    """
 
     record_id: str = Field(min_length=1)
     scope: Literal["task", "current_context"]
@@ -87,6 +101,9 @@ class FeedbackRecord(StateModel):
     activity_status: ActivityStatus | None
     understanding_status: UnderstandingStatus | None
     source: Literal["user_report"] = "user_report"
+    # 新记录指向被更正的旧记录；旧原话保留，不表示恢复任务或修改计划。
+    supersedes_record_id: str | None = Field(default=None, min_length=1)
+
 
 class LearningState(StateModel):
     # 保留原字段名，但语义明确为“当前生效值”。
@@ -139,6 +156,35 @@ class LearningState(StateModel):
             raise ValueError("任务 task_id 不能重复")
         return self
 
+    @model_validator(mode="after")
+    def check_feedback_history(self) -> LearningState:
+        seen = {}
+        replaced = set()
+
+        for record in self.feedback_records:
+            if record.record_id in seen:
+                raise ValueError("反馈record_id不能重复")
+
+            target_id = record.supersedes_record_id
+            if target_id is not None:
+                target = seen.get(target_id)
+
+                # 只允许指向更早的记录，因此自指、前向引用和环都会被拒绝。
+                if target is None:
+                    raise ValueError("更正必须指向此前已有的反馈记录")
+
+                if record.scope != "current_context" or target.scope != "current_context":
+                    raise ValueError("本阶段仅支持更正当前安排反馈")
+
+                if target_id in replaced:
+                    raise ValueError("该反馈已被更正，请选择更正链的最新记录")
+
+                replaced.add(target_id)
+
+            seen[record.record_id] = record
+
+        return self
+
 def register_learning_task(
     state: LearningState,
     task: LearningTask,
@@ -169,8 +215,23 @@ def apply_user_feedback(
     调用方负责确认反馈确实来自用户。这个纯函数不调用模型，
     也不能判断用户是否真的理解；它只执行明确的数据更新。
     """
-    if not any(task.task_id == feedback.task_id for task in state.tasks):
+    target = next(
+        (task for task in state.tasks if task.task_id == feedback.task_id),
+        None,
+    )
+    if target is None:
         raise ValueError(f"任务不存在：{feedback.task_id}")
+
+    # 取消后保留的是历史进度，反馈入口不能借更新进度暗中恢复执行。
+    # 仍允许纠正理解情况或补充原话，但不会清除取消标记。
+    if (
+        target.is_cancelled
+        and feedback.activity_status is not None
+        and feedback.activity_status != target.activity_status
+    ):
+        raise ValueError(
+            "任务已取消，不能通过进度反馈改变历史进度；如需继续，应明确恢复任务"
+        )
 
     # exclude_none=True 保留“未提及”和“明确更新”之间的区别。
     changes = feedback.model_dump(

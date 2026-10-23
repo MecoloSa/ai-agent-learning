@@ -50,7 +50,7 @@ def test_binding_roundtrip_and_no_revision_change(tmp_path):
     assert associated.tasks == original.tasks
     assert original.material_binding is None
     path = save_learning_state(associated, tmp_path / "state.json")
-    assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == "learning-state-v5"
+    assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == "learning-state-v7"
     assert load_learning_state(path) == associated
     same, notice = resolve_resume_materials(associated)
     assert same is associated
