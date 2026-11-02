@@ -208,7 +208,7 @@ def test_proposal_calls_share_existing_budget(monkeypatch):
         ]),
         AIMessage(content="等待程序确认。"),
     ])
-    monkeypatch.setattr(main, "get_settings", lambda: SimpleNamespace(interactive_max_retrieval_calls=2))
+    monkeypatch.setattr(main, "get_settings", lambda: SimpleNamespace(interactive_max_retrieval_calls=2, interactive_max_no_progress_calls=4))
     monkeypatch.setattr(main, "invoke_llm_response", lambda *a, **kw: next(responses))
     audit = {}
     main._invoke_interactive_turn(

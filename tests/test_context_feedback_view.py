@@ -116,7 +116,7 @@ def test_current_roundtrip_does_not_need_validity_field(tmp_path):
     state = update_learning_context(make_state((make_record(),)), plan_markdown="新计划")
     path = save_learning_state(state, tmp_path / "v6.json")
     payload = json.loads(path.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == "learning-state-v7"
+    assert payload["schema_version"] == "learning-state-v8"
     assert "validity" not in payload["state"]["feedback_records"][0]
     restored = load_learning_state(path)
     assert restored == state

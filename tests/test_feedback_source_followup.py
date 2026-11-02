@@ -78,7 +78,7 @@ def invoke_fake(monkeypatch, responses, *, limit=3):
     inbox = FeedbackInbox()
     inbox.start_turn(state(), "今天只剩20分钟，请记录，不改计划")
     iterator = iter(responses)
-    monkeypatch.setattr(main, "get_settings", lambda: SimpleNamespace(interactive_max_retrieval_calls=limit))
+    monkeypatch.setattr(main, "get_settings", lambda: SimpleNamespace(interactive_max_retrieval_calls=limit, interactive_max_no_progress_calls=4))
     monkeypatch.setattr(main, "invoke_llm_response", lambda *a, **kw: next(iterator))
     trace = {}
     answer = main._invoke_interactive_turn(

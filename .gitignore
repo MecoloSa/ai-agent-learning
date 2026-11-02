@@ -42,6 +42,9 @@ AGENTS.md
 # 临时文件目录
 tmp/
 
+# Local reversible maintenance archives may include private historical artifacts.
+/.maintenance-archive/
+
 # 在线评测结果可能包含资料片段和模型输出，只保留本地结果。
 .evaluation-results/
 

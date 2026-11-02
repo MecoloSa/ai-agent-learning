@@ -81,7 +81,7 @@ def test_revision_keeps_raw_source_and_adopts_confirmed_complete_content(tmp_pat
     # 复用现有v7的text/quote和更正关系，不在磁盘引入模型临时候选参数。
     path = save_learning_state(updated, tmp_path / "state.json")
     envelope = json.loads(path.read_text(encoding="utf-8"))
-    assert envelope["schema_version"] == "learning-state-v7"
+    assert envelope["schema_version"] == "learning-state-v8"
     assert "replacement_text" not in envelope["state"]["feedback_records"][-1]
     restored = load_learning_state(path)
     assert restored == updated

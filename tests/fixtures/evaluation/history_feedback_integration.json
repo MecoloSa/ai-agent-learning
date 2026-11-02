@@ -1,0 +1,11 @@
+{
+  "schema_version": "history-feedback-integration-v1",
+  "initial_state": "feedback_plan/adoption_state.json",
+  "history": [
+    {"user": "今天最多40分钟，可以阅读、口头说明或绘图。这里只讨论，不修改正式计划、任务或反馈。", "assistant": "了解。"},
+    {"user": "更正本次安排限制：今天最多20分钟，只阅读和口头说明，不绘图，也不编程。这里只更正对话条件，不修改正式计划、任务或反馈。", "assistant": "了解。"}
+  ],
+  "question": "请先核对我此前最后一次说明的本次安排限制，再结合当前学习反馈，为尚未理解的部分提出完整的后续计划候选。不改变学习目标，不更改或重建任务，不恢复已取消任务，不新增或改写反馈。",
+  "target_turn": 2,
+  "resume_question": "请只复述当前生效计划及已登记任务的进度、理解和取消情况，不修改记录。"
+}

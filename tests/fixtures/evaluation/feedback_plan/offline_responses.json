@@ -1,0 +1,5 @@
+{
+  "feedback-plan-dev-001": ["以下仅为离线固定回复：只讨论，不修改记录。"],
+  "feedback-plan-dev-002": ["===NEW_PLAN_START===\n# 离线固定候选\n任务1：阅读30分钟。\n任务2：口述30分钟。\n总计60分钟。本候选故意不满足30分钟要求，不作为质量合格样例。\n===NEW_PLAN_END==="],
+  "feedback-plan-dev-003": ["===NEW_PLAN_START===\n# 离线固定候选\n阅读例句15分钟，再口头说明15分钟。固定回复仅用于控制回放。\n===NEW_PLAN_END==="]
+}

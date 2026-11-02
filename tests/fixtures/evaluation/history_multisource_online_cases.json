@@ -1,0 +1,22 @@
+{
+  "schema_version": "history-readback-online-cases-v1",
+  "history": [
+    {"user": "更正：今天最多35分钟，其他条件保持。这里只更正对话条件，不修改任何计划或记录。", "assistant": "了解，时间更正为35分钟。"},
+    {"user": "暗号松柏：下次核对这个词，不修改记录。", "assistant": "了解，保留在对话中。"}
+  ],
+  "sources": [
+    {"through_turn": 1, "history": [{"user": "今天最多20分钟，只阅读和口头说明。这里只讨论，不修改正式记录。", "assistant": "了解，暂按20分钟讨论。"}]},
+    {"through_turn": 1, "history": [
+      {"user": "更正：今天最多35分钟，其他条件保持。这里只更正对话条件，不修改任何计划或记录。", "assistant": "了解，时间更正为35分钟。"},
+      {"user": "暗号松柏：下次核对这个词，不修改记录。", "assistant": "了解，保留在对话中。"}
+    ]}
+  ],
+  "cases": [
+    {"case_id": "history-multisource-online-008", "through_turn": 1, "target_source": 2, "target_turn": 1,
+     "question": "我之前把今天的学习时间更正成多少了？请找出当时完整的用户原话，并保留历史引用。只核对历史，不修改任何计划、任务或反馈。",
+     "review": "搜索覆盖两个来源，回读来源2第1轮，完整引用35分钟原话。"},
+    {"case_id": "history-multisource-online-009", "through_turn": 1, "target_source": 2, "target_turn": 2,
+     "question": "请在当前快照关联的全部历史用户消息中搜索“暗号松柏”；如果有匹配，读取完整问答；没有匹配就说明本次查询范围未找到，不推断我从未说过。不要修改记录。",
+     "review": "搜索返回空，不读取或泄露来源2第2轮。"}
+  ]
+}

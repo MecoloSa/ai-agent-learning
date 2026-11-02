@@ -179,7 +179,7 @@ def test_v6_read_defaults_to_no_link_and_v7_roundtrip_preserves_link(tmp_path):
     assert restored.feedback_records[0].supersedes_record_id is None
     revised = commit_feedback_proposal(restored, pending(restored))
     path = save_learning_state(revised, tmp_path / "v7.json")
-    assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == "learning-state-v7"
+    assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == "learning-state-v8"
     assert load_learning_state(path) == revised
     assert len(view(load_learning_state(path))["current_context_feedback"]) == 1
 

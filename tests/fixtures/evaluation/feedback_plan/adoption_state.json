@@ -1,0 +1,17 @@
+{
+  "schema_version": "learning-state-v7",
+  "state": {
+    "learning_goal": "理解正常结束与保护性停止的区别",
+    "plan_markdown": "# 初始计划\n\n任务1：阅读并比较两类停止，30分钟。\n任务2：口头复述并解释例子，15分钟。\n任务3：画图梳理关系，15分钟。\n总计60分钟。",
+    "context_revision": 1,
+    "tasks_need_review": false,
+    "tasks": [
+      {"task_id":"read-001","title":"阅读两类停止的定义","activity_status":"completed","understanding_status":"self_reported_unclear","latest_feedback":"阅读已经完成，但还是分不清两类停止。","feedback_source":"user_report"},
+      {"task_id":"explain-002","title":"口头解释两类停止的区别","activity_status":"in_progress","understanding_status":"unknown"},
+      {"task_id":"draw-003","title":"画图梳理关系","activity_status":"not_started","understanding_status":"unknown","is_cancelled":true,"cancellation_reason":"用户此前决定暂不做绘图。"}
+    ],
+    "feedback_records": [
+      {"record_id":"feedback-read-001","scope":"task","task_id":"read-001","quote":"阅读已经完成，但还是分不清两类停止。","text":"阅读已经完成，但还是分不清两类停止。","context_revision":1,"recorded_on":"2026-10-28","activity_status":"completed","understanding_status":"self_reported_unclear","source":"user_report"}
+    ]
+  }
+}

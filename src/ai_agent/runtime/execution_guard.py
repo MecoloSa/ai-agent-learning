@@ -31,6 +31,7 @@ class ExecutionRecord:
     tool_name: str
     succeeded: bool
     returned: bool = False
+    failure_reason: str | None = None
 
 
 def resolve_execution_requirement(
@@ -82,12 +83,40 @@ _SUCCESS_CHECKERS: dict[str, Callable[[str], bool]] = {
     "read_pdf_pages": _structured_result_succeeded,
     "read_feedback_history": _structured_result_succeeded,
     "read_confirmation_history": _structured_result_succeeded,
+    "list_conversation_sources": _structured_result_succeeded,
+    "read_conversation_turn": _structured_result_succeeded,
+    "search_conversation_turns": _structured_result_succeeded,
 
     # 此处的成功仅指提议被接收为pending，不代表确认或保存。
     "propose_learning_feedback": _structured_result_succeeded,
     "propose_task_creation": _structured_result_succeeded,
     "propose_task_cancellation": _structured_result_succeeded,
+    "propose_plan_change": _structured_result_succeeded,
 }
+
+
+def execution_failure_reason(tool_name: str, result: str) -> str | None:
+    """只解释已知工具的结构化错误码，不展示外部错误正文。"""
+    if tool_name != "read_conversation_turn":
+        return None
+    try:
+        payload = json.loads(result)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict) or payload.get("ok") is not False:
+        return None
+    error = payload.get("error")
+    if not isinstance(error, dict) or not isinstance(error.get("code"), str):
+        return None
+    # 文案由程序固定；工具message或模型回答可能包含路径、原文或指令，不能直接拼接。
+    reasons = {
+        "turn_out_of_scope": "请求轮次超过当前快照关联上限，本次未取得该轮原文。请使用已关联该轮的快照，或由你提供原话。",
+        "source_out_of_scope": "请求来源不在本轮允许范围，请先查看当前已关联的历史来源。",
+        "read_limit_exceeded": "完整问答超过本次读取字符预算，本次未返回截断原文；单次回读上限为4000字符。",
+        "archive_unavailable": "关联归档缺失或无法读取，请检查归档是否仍可用；本次未取得原文。",
+        "turn_missing": "关联范围内未找到该轮记录，不能据此断言这段对话从未发生。",
+    }
+    return reasons.get(error["code"])
 
 
 def supports_execution_check(tool_name: str) -> bool:

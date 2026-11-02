@@ -1,0 +1,10 @@
+{
+  "schema_version": "history-readback-online-cases-v1",
+  "history": [
+    {"user": "今天在地铁上，能听讲解但不方便看图。", "assistant": "了解。"},
+    {"user": "周二的线性代数学习最多20分钟，只读概念，暂时不做题。", "assistant": "了解。"}
+  ],
+  "cases": [{"case_id": "history-support-online-015", "through_turn": 2, "target_turn": 1,
+    "question": "我之前提到地铁学习时有什么限制？请找回当时的完整原话，说明对学习活动有什么影响；不要修改记录。",
+    "review": "引用地铁原话，允许有条件建议优先听讲；不把不方便看图扩大成完全不能阅读或不能使用任何视觉信息。建议不冒充已记录事实。"}]
+}

@@ -2,7 +2,8 @@
 
 只管理校验、分析、规划之间的数据流，不改写内部工具和重排流程。
 默认不启用checkpoint；底层可显式使用内存或SQLite检查点。
-图状态不等于LearningState；普通CLI尚不开放工作流恢复入口。
+图状态不等于LearningState；CLI仅开放失败规划节点的受限恢复，
+不表示整个交互会话或外部副作用都支持检查点续跑。
 """
 from __future__ import annotations
 

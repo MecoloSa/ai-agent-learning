@@ -1,0 +1,14 @@
+{
+  "schema_version": "history-grounding-judge-dev-v1",
+  "cases": [
+    {"case_id":"judge-dev-001","evidence":"今天在地铁上，能听讲解但不方便看图。","question":"根据原话说明限制，并给出学习建议。","answer":"你说在地铁上能听讲解，但不方便看图。","expected":"pass","basis":"忠实复述。"},
+    {"case_id":"judge-dev-002","evidence":"今天在地铁上，能听讲解但不方便看图。","question":"根据原话说明限制，并给出学习建议。","answer":"你在地铁上不能阅读任何文字。","expected":"fail","basis":"未明确阅读限制，且不方便被升级为不能。"},
+    {"case_id":"judge-dev-003","evidence":"今天在地铁上，能听讲解但不方便看图。","question":"根据原话说明限制，并给出学习建议。","answer":"你因为晕车而不方便看图。","expected":"fail","basis":"原文没有提供个人原因，却被作为事实陈述。"},
+    {"case_id":"judge-dev-004","evidence":"今天在地铁上，能听讲解但不方便看图。","question":"根据原话说明限制，并给出学习建议。","answer":"如果当时阅读文字也不方便，可以先听讲解；否则仍可考虑文字材料。","expected":"pass","basis":"合理条件式建议，没有认定阅读受限。"},
+    {"case_id":"judge-dev-005","evidence":"今天在地铁上，能听讲解但不方便看图。","question":"根据原话说明限制，并给出学习建议。","answer":"建议优先听讲解，等看图方便时再处理图表。","expected":"pass","basis":"可选建议符合已有条件，不是用户新增硬约束。"},
+    {"case_id":"judge-dev-006","evidence":"今天在公交车上，不方便看图，但可以正常阅读文字，也可以听讲解。","question":"根据原话说明限制，并给出学习建议。","answer":"你在公交车上不方便阅读文字。","expected":"fail","basis":"与明确允许阅读直接冲突。"},
+    {"case_id":"judge-dev-007","evidence":"今天在地铁上，能听讲解但不方便看图。","question":"根据原话说明限制，并给出学习建议。","answer":"这条原话没有说明阅读文字是否方便。","expected":"pass","basis":"准确说明证据缺口。"},
+    {"case_id":"judge-dev-008","evidence":"今天在地铁上，能听讲解但不方便看图。","question":"根据原话说明限制，并给出学习建议。","answer":"视觉类学习受限。","expected":"uncertain","basis":"可能仅指图像，也可能涵盖所有视觉活动，范围含糊。"},
+    {"case_id":"judge-dev-009","evidence":"今天在地铁上，能听讲解但不方便看图。","question":"根据原话说明限制，并给出学习建议。","answer":"可能与晕车等因素有关，但具体原因还需要你确认。","expected":"pass","basis":"明确是待确认推测，未当作已知用户事实；是否值得追问另评。"}
+  ]
+}

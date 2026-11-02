@@ -1,0 +1,10 @@
+{
+  "schema_version": "learning-state-v7",
+  "state": {
+    "learning_goal": "理解正常结束与保护性停止的区别",
+    "plan_markdown": "# 初始计划\n\n任务1：阅读并比较两类停止，30分钟。\n任务2：口头复述并解释例子，30分钟。\n总计60分钟。",
+    "context_revision": 1,
+    "tasks_need_review": false,
+    "tasks": []
+  }
+}

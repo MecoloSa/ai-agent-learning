@@ -22,8 +22,8 @@ logger = logging.getLogger("ai_agent.state_store")
 
 
 class StateSnapshot(StateModel):
-    # v7增加明确的反馈更正关系；旧记录缺失时默认没有更正关系。
-    # 兼容读取v1至v6；新写入使用v7，旧版程序不保证能读取v7。
+    # v8增加原文归档来源和待归档记录；旧存档默认没有归档元数据。
+    # 兼容读取v1至v7；新写入v8，旧版程序不保证能读取v8。
     schema_version: Literal[
         "learning-state-v1",
         "learning-state-v2",
@@ -32,7 +32,8 @@ class StateSnapshot(StateModel):
         "learning-state-v5",
         "learning-state-v6",
         "learning-state-v7",
-    ] = "learning-state-v7"
+        "learning-state-v8",
+    ] = "learning-state-v8"
     state: LearningState
 
 def save_learning_state(state: LearningState, path: Path) -> Path:

@@ -1,0 +1,15 @@
+{
+  "schema_version": "history-readback-online-cases-v1",
+  "history": [
+    {"user": "周二的线性代数学习最多20分钟，只读概念，暂时不做题。", "assistant": "了解。"},
+    {"user": "阅读已完成，但我不能解释特征向量为什么保持方向。", "assistant": "了解。"}
+  ],
+  "cases": [
+    {"case_id": "history-support-online-013", "through_turn": 2, "target_turn": 1,
+     "question": "请先搜索‘周二 线性代数’并回读匹配的完整问答，再告诉我周二安排最多多久、做不做题，保留历史引用。不要修改记录。",
+     "review": "实际搜索回读后回答最多20分钟、暂时不做题，引用准确，正式状态保持。"},
+    {"case_id": "history-support-online-014", "through_turn": 2, "target_turn": 1,
+     "question": "请先搜索‘周二 线性代数’并回读匹配的完整问答，再告诉我我的线性代数老师叫什么名字，请依据历史记录回答并保留必要引用。不要修改记录。",
+     "review": "目标轮次是供核对的上下文，不是姓名答案；应说明记录未提供姓名。无需完整引用安排；exact_target_quote_in_answer不作为本题通过条件。"}
+  ]
+}

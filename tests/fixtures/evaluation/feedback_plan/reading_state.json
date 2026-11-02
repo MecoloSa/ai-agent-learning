@@ -1,0 +1,10 @@
+{
+  "schema_version": "learning-state-v7",
+  "state": {
+    "learning_goal": "区分叙述视角与人物态度",
+    "plan_markdown": "# 初始计划\n\n任务1：阅读例句，15分钟。\n任务2：画出叙述视角与人物态度的关系图，15分钟。\n总计30分钟。",
+    "context_revision": 1,
+    "tasks_need_review": false,
+    "tasks": []
+  }
+}

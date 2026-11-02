@@ -45,7 +45,7 @@ def test_existing_turn_loop_accepts_mcp_tool(open_reader, tmp_path, monkeypatch)
             AIMessage(content="读取完成"),
         ]
     ])
-    monkeypatch.setattr(main, "get_settings", lambda: SimpleNamespace(interactive_max_retrieval_calls=1))
+    monkeypatch.setattr(main, "get_settings", lambda: SimpleNamespace(interactive_max_retrieval_calls=1, interactive_max_no_progress_calls=4))
     monkeypatch.setattr(main, "invoke_llm_response", lambda *a, **kw: next(responses))
     with open_reader(str(tmp_path)) as tool:
         for _ in range(2):

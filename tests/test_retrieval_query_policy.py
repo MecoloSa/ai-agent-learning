@@ -63,7 +63,7 @@ def test_tool_accepts_single_or_complementary_queries(
         def expand_neighbors(self, hits, *, window):
             return hits
 
-        def format_documents(self, documents, *, max_context_chars):
+        def format_documents(self, documents, *, max_context_chars, selection_trace=None):
             return "[source=a.md, chunk=0]\n资料证据"
 
     monkeypatch.setattr(tools_module, "LearningRAG", FakeRAG)

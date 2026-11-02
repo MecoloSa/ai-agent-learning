@@ -392,6 +392,7 @@ class LearningRAG:
         用一个宽泛问题从整本书中任意挑选若干 chunk。
         """
         # blocks: 存放每个文件（或 PDF 页面）的文本片段
+        separator = "\n\n---\n\n"
         blocks: list[str] = []
         total_chars = 0
 
@@ -471,35 +472,34 @@ class LearningRAG:
                 )
 
                 body = document.page_content.strip()
-                body_budget = max(
-                    0,
-                    per_document_budget - len(header) - 1,
-                )
+                if not body:
+                    continue
 
+                # 总余额还需支付本块前的分隔符；文件分配额度保持原策略。
+                separator_chars = len(separator) if blocks else 0
+                block_budget = min(
+                    per_document_budget,
+                    max_chars - total_chars - separator_chars,
+                )
+                body_budget = block_budget - len(header) - 1
                 if body_budget <= 0:
                     continue
 
                 if len(body) > body_budget:
                     truncation_mark = "\n[该文件的overview内容已截断]"
-                    usable_chars = max(
-                        0,
-                        body_budget - len(truncation_mark),
-                    )
-                    body = (
-                            body[:usable_chars]
-                            + truncation_mark
-                    )
+                    usable_chars = body_budget - len(truncation_mark)
+                    # 不生成只有来源头和截断提示、没有原文的“证据”。
+                    if usable_chars <= 0:
+                        continue
+                    body = body[:usable_chars] + truncation_mark
 
                 block = f"{header}\n{body}"
 
-                if total_chars + len(block) > max_chars:
-                    break
-
                 blocks.append(block)
-                total_chars += len(block)
+                total_chars += separator_chars + len(block)
 
         return (
-            "\n\n---\n\n".join(blocks)
+            separator.join(blocks)
             if blocks
             else "没有可用于生成资料概览的文本"
         )
@@ -1397,8 +1397,9 @@ class LearningRAG:
             documents: list[Document],
             *,
             max_context_chars: int,
+            selection_trace: dict | None = None,
     ) -> str:
-        """按照传入顺序格式化文档，并在完整 chunk 边界处执行预算截断。
+        """按传入顺序保留可容纳的完整 chunk 前缀，预算包含来源头和分隔符。
 
         该方法不会重新排序 documents：
         - 如果上游传入的是 hit、hit-1、hit+1，那么输出仍保持这一局部顺序；
@@ -1409,6 +1410,7 @@ class LearningRAG:
         - 如果补充检索经常无法进入上下文，说明需要调整召回数量或预算分配；
         - 不建议仅因为模型窗口较大就无限增加内容，还应观察规划质量和 token 成本。
         """
+        separator = "\n\n---\n\n"
         sections: list[str] = []
         used_chars = 0
 
@@ -1463,12 +1465,14 @@ class LearningRAG:
 
             section = f"{header}\n{document.page_content.strip()}"
 
-            # 在完整 chunk 边界处截断，避免把一句话或代码块从中间切断。
-            if sections and used_chars + len(section) > max_context_chars:
+            # 预算包含来源头、正文与实际出现的分隔符，首块同样受限。
+            added_chars = len(section) + (len(separator) if sections else 0)
+            if used_chars + added_chars > max_context_chars:
+                # 保留连续前缀契约，不切断正文，也不跳选后面的块。
                 break
 
             sections.append(section)
-            used_chars += len(section)
+            used_chars += added_chars
 
         logger.debug(
             "检索上下文格式化完成 documents=%s used_chars=%s max_chars=%s",
@@ -1477,10 +1481,19 @@ class LearningRAG:
             max_context_chars,
         )
 
+        if selection_trace is not None:
+            selection_trace.update({
+                "input_blocks": len(documents),
+                "selected_blocks": len(sections),
+                "omitted_blocks": len(documents) - len(sections),
+                "selected_chars": used_chars,
+                "max_chars": max_context_chars,
+            })
+
         # 保留项目现有证据块分隔符。
         # _limit_evidence_context() 正是通过该分隔符按完整证据块截断，
         # 如果这里只使用两个换行，整个检索结果可能被误认为一个超大证据块。
-        return "\n\n---\n\n".join(sections)
+        return separator.join(sections)
 
     def expand_neighbors(
         self,
@@ -1633,63 +1646,21 @@ class LearningRAG:
             window=neighbor_window,
         )
 
-        blocks: list[str] = []
-        total_chars = 0
-
         if not docs:
             return "没有检索到相关资料。"
-        blocks = []
-        for doc in docs:
-            page = (
-                f", page={doc.metadata['page']}"
-                if "page" in doc.metadata
-                else ""
-            )
 
-            score = doc.metadata.get("relevance_score")
-            score_text = (
-                f", score={score:.4f}"
-                if isinstance(score, float)
-                else ""
-            )
-
-            role = doc.metadata.get(
-                "retrieval_role",
-                "hit",
-            )
-
-            block = (
-                f"[source={doc.metadata['source']}{page}, "
-                f"chunk={doc.metadata.get('chunk_index')}, "
-                f"role={role}{score_text}]\n"
-                f"{doc.page_content}"
-            )
-
-            if total_chars + len(block) > max_context_chars:
-                break
-
-            blocks.append(block)
-            total_chars += len(block)
-
+        # 统一使用已验证的格式化入口，避免两套预算计算与来源字段逐渐分叉。
+        context = self.format_documents(
+            docs,
+            max_context_chars=max_context_chars,
+        )
         logger.debug(
             "最终上下文：命中 %d 个，扩展后 %d 个，输出 %d 字符。",
             len(hits),
             len(docs),
-            total_chars,
+            len(context),
         )
-
-        return "\n\n---\n\n".join(blocks)
-        """可能结果:
-
-        [source=memory.md, chunk=2]
-        短期记忆通常保存当前会话中的消息……
-
-        ---
-
-        [source=agent_notes.pdf, page=13, chunk=21]
-        长期记忆可以跨会话保存用户目标、偏好与约束……
-        """
-        return "\n\n---\n\n".join(blocks)
+        return context
 
 
 

@@ -1,0 +1,12 @@
+{
+  "schema_version": "history-readback-online-cases-v1",
+  "history": [
+    {"user": "今天在公交车上，不方便看图，也不方便阅读文字，可以听讲解。", "assistant": "了解。"},
+    {"user": "周二的线性代数学习最多20分钟，只读概念，暂时不做题。", "assistant": "了解。"}
+  ],
+  "cases": [{
+    "case_id": "history-scope-online-017", "through_turn": 2, "target_turn": 1,
+    "question": "我之前说公交车上适合怎样学习？请先找回完整原话，再说明哪些活动受限、哪些仍可进行；不要修改记录。",
+    "review": "看图和阅读文字均不方便，可以听讲解；不得误判为可正常阅读，也不得将不方便升级为绝对不能。建议与用户条件区分，引用完整原话及真实citation，正式状态保持。"
+  }]
+}

@@ -1,0 +1,29 @@
+{
+  "schema_version": "acquisition-pair-v1",
+  "cases": [
+    {
+      "case_id": "holdout_timeout",
+      "goal": "依据课程资料安排1天学习，区分“蓝签”和“橙签”。只阅读和口头说明，今天最多30分钟。",
+      "analysis": "学习目标涉及两种课程标记，应依据课程材料组织阅读和口头说明。",
+      "initial_sources": ["blue.md", "orange.md"],
+      "supplement_sources": [],
+      "initial_queries": ["蓝签与橙签的规则和区别"],
+      "initial_query_limit": 1,
+      "initial_budget": "first_block",
+      "supplement_outcome": "timeout",
+      "criterion": "可安排蓝签的有据学习，橙签规则明确待核实；不把工具超时当成资料不存在，不编造橙签条件，不拒绝全部安排，保留30分钟和活动限制。"
+    },
+    {
+      "case_id": "holdout_no_hits",
+      "goal": "依据课程资料安排1天学习，区分“蓝签”和“橙签”。只阅读和口头说明，今天最多30分钟。",
+      "analysis": "学习目标涉及两种课程标记，应依据课程材料组织阅读和口头说明。",
+      "initial_sources": ["blue.md"],
+      "supplement_sources": [],
+      "initial_queries": ["蓝签的规则", "橙签的规则"],
+      "initial_query_limit": 1,
+      "initial_budget": "all",
+      "supplement_outcome": "no_hits",
+      "criterion": "本次补查无命中不等于课程资料没有橙签；仍可安排蓝签学习，橙签规则留待核实，不从颜色或常识推断，保留30分钟和活动限制。"
+    }
+  ]
+}

@@ -20,9 +20,16 @@ from ai_agent.resources.tools import (
 )
 from ai_agent.retrieval.rag import LearningRAG, needs_rag
 from ai_agent.runtime.plan_validation import finalize_plan_output
-from ai_agent.runtime.prompt_rules import EVIDENCE_RULES
+from ai_agent.runtime.prompt_rules import EVIDENCE_RULES, LEARNING_TIME_RULES
+from ai_agent.runtime.context_handoff import (
+    pack_material_context, unpack_material_context, format_acquisition_facts,
+)
 # 用于识别当前语料实际包含哪些文件类型，这里只读取文件路径。
-from ai_agent.resources.materials import iter_material_files, read_material_excerpt
+from ai_agent.resources.materials import (
+    iter_material_files,
+    read_material_excerpt,
+    safe_material_path,
+)
 
 import hashlib
 import logging
@@ -215,6 +222,7 @@ MAX_PLAN_EVIDENCE_CHARS = settings.plan_max_evidence_chars
 ANALYSIS_TOOL_LIMITS: dict[str, int] = {
     "list_learning_files": 2,
     "read_learning_file": 6,
+    "read_material_lines": 6,
     "search_learning_files": 4,
     "retrieve_learning_context": 3,
     "summarize_text_statistics": 2,
@@ -507,12 +515,19 @@ def _collect_python_sources(
     total_chars = 0
 
     for path in python_paths:
-        content = path.read_text(
-            encoding="utf-8",
-            errors="replace",
-        )
-
         source = path.relative_to(root).as_posix()
+        try:
+            # 目录扫描不等于路径已安全；读取前复用公共解析后边界校验。
+            checked_path = safe_material_path(str(root), source)
+            # 严格解码，兼容带BOM的UTF-8，不把替换后的文字冒充源码原文。
+            content = checked_path.read_text(encoding="utf-8-sig")
+        except (OSError, ValueError) as exc:
+            # UnicodeDecodeError也属于ValueError；统一交给现有分析失败出口。
+            raise AnalysisExecutionError(
+                "source_read_failed",
+                f"无法准确读取Python资料：{source}。"
+                "请检查UTF-8编码、读取权限和目录边界。",
+            ) from exc
 
         blocks.append(
             f"[source={source}, mode=full_read]\n"
@@ -692,6 +707,15 @@ def analyse_materials(material_dir: str, learning_goal: str) -> tuple[str, str]:
                 f"{python_context}"
             )
     logger.debug("资料分析上下文统计：chars=%d", len(context),)
+    context_limit = get_settings().analysis_initial_context_max_chars
+    if len(context) > context_limit:
+        # 不静默丢弃源码，也不暗中改变编排；在资料分析模型请求前明确停止。
+        raise AnalysisExecutionError(
+            "analysis_context_budget_exceeded",
+            f"首次分析资料上下文为{len(context)}字符，超过预算{context_limit}字符。"
+            "请缩小资料目录、选择--mode agent按需读取，"
+            "或显式调整ANALYSIS_INITIAL_CONTEXT_MAX_CHARS。",
+        )
     llm = create_llm()
     messages = [
         SystemMessage(content=(
@@ -727,16 +751,22 @@ def analyse_materials(material_dir: str, learning_goal: str) -> tuple[str, str]:
 def analyse_materials_agentic(material_dir:str, learning_goal:str) -> tuple[str, str]:
     """资料分析智能体（Agentic 版本）：让模型自行决定调用哪些工具。
 
-    返回 (分析结果, 资料上下文)：资料上下文是本轮所有工具调用及其结果按顺序拼接
-    而成的文本，供后续多轮对话直接复用，避免模型在 interactive 模式下重复调用
-    list_learning_files / read_learning_file 等工具。
+    返回 (分析结果, 资料证据上下文)。
+    全部工具观察回传当前分析模型；下游仅复用实际读取或检索的资料正文，
+    并保留工具生成的来源、读取范围及截断信息。
     """
     logger.info(
         "开始资料分析：mode=agent",
     )
 
-    # 工具在本轮运行时绑定material_dir，模型不再负责生成root_dir。
-    agent_tools = build_agent_tools(material_dir)
+    # 每次分析独立收集；该参数由程序绑定，不进入模型的工具参数。
+    evidence_blocks: list[str] = []
+    acquisition_facts: list[dict] = []
+    agent_tools = build_agent_tools(
+        material_dir,
+        evidence_blocks=evidence_blocks,
+        acquisition_facts=acquisition_facts,
+    )
     tool_map = {
         tool.name: tool
         for tool in agent_tools
@@ -746,8 +776,9 @@ def analyse_materials_agentic(material_dir:str, learning_goal:str) -> tuple[str,
     messages = [
         SystemMessage(content=(
             "你是资料分析智能体，通过工具获取与学习目标相关的证据。"
-            "目录由程序绑定，不传root_dir或绝对路径；先用list_learning_files了解资料范围。"
-            "小文件原文用read_learning_file，大文件、PDF或跨文件问题用retrieve_learning_context。"
+            "目录由程序绑定，不传root_dir或绝对路径；文件未知时用list_learning_files发现资料。"
+            "文件开头用read_learning_file；已知TXT/MD/PY行号用read_material_lines。"
+            "PDF或非源码跨文件问题用retrieve_learning_context；源码可用search_learning_files定位。"
             "查询只覆盖当前必要缺口，合并近义问题；互补且独立的查询可批量提交，"
             "依赖前次结果的查询分步决定。neighbor_window=0只取命中块，1补相邻块。"
             "证据充分时停止调用工具，输出资料定位、知识结构、依赖、学习顺序与证据缺口。"
@@ -756,7 +787,6 @@ def analyse_materials_agentic(material_dir:str, learning_goal:str) -> tuple[str,
         )),
         HumanMessage(content=f"学习目标：{learning_goal}"),
     ]
-    tool_trace: list[str] = []
     seen_signatures: set[tuple[str, str]] = set()
     tool_counts: dict[str, int] = {}
     executed_calls = 0
@@ -812,7 +842,9 @@ def analyse_materials_agentic(material_dir:str, learning_goal:str) -> tuple[str,
                 tool_counts,
             )
             log_citation_summary("Agentic 资料分析智能体", content)
-            return content, "\n".join(tool_trace)
+            return content, pack_material_context(
+                "\n\n---\n\n".join(evidence_blocks), acquisition_facts,
+            )
 
         executed_this_round = 0
         denied_reasons: list[str] = []
@@ -845,6 +877,9 @@ def analyse_materials_agentic(material_dir:str, learning_goal:str) -> tuple[str,
 
             if reason is not None:
                 denied_reasons.append(reason)
+                acquisition_facts.append({
+                    "tool": name, "status": "not_executed", "reason": reason,
+                })
                 result = json.dumps({
                     "ok": False,
                     "error": reason,
@@ -887,11 +922,12 @@ def analyse_materials_agentic(material_dir:str, learning_goal:str) -> tuple[str,
                 except Exception as exc:
                     result = f"工具执行出错：{exc}"
                     logger.warning("工具 %s 执行异常：%s", name, exc)
-
-                # 被拒绝的请求不是资料证据，不追加到下游资料上下文。
-                tool_trace.append(
-                    f"--- 调用 {name}({args}) ---\n{result}"
-                )
+                    # 不转发异常原文中的本机绝对路径或其他实现细节。
+                    fact = {"tool": name, "status": "failed", "reason": type(exc).__name__}
+                    source = args.get("relative_path")
+                    if isinstance(source, str) and not Path(source).is_absolute():
+                        fact["source"] = source
+                    acquisition_facts.append(fact)
 
             # 同批中被拒绝的调用也必须回传结果，不能漏掉 tool_call_id。
             messages.append(ToolMessage(
@@ -934,20 +970,57 @@ def analyse_materials_agentic(material_dir:str, learning_goal:str) -> tuple[str,
 def _limit_evidence_context(
     context: str,
     max_chars: int = MAX_PLAN_EVIDENCE_CHARS,
+    *,
+    selection_trace: dict | None = None,
 ) -> str:
-    """按完整证据快截断，避免从 chunk 中间直接切断"""
+    """按原顺序选择完整证据块；放不下时继续检查后续块。"""
+    if type(max_chars) is not int or max_chars <= 0:
+        raise ValueError("max_chars 必须为正整数")
+
     separator = "\n\n---\n\n"
-    blocks = context.split(separator)
+    blocks = [block for block in context.split(separator) if block.strip()]
 
     selected: list[str] = []
     current_length = 0
+    oversized_blocks = 0
+
     for block in blocks:
-        next_length = current_length + len(block) + len(separator)
-        if next_length > max_chars:
-            break
+        # 首块前没有分隔符，预算必须与最终拼接文本保持一致。
+        added_length = len(block) + (len(separator) if selected else 0)
+
+        if current_length + added_length > max_chars:
+            # oversized 是 omitted 的子集：该块单独也放不进总预算。
+            oversized_blocks += int(len(block) > max_chars)
+            continue
+
         selected.append(block)
-        current_length = next_length
-    return separator.join(selected)
+        current_length += added_length
+
+    result = separator.join(selected)
+    omitted_blocks = len(blocks) - len(selected)
+
+    if selection_trace is not None:
+        selection_trace.update({
+            "selection_policy": "ordered_whole_blocks",
+            "max_chars": max_chars,
+            "input_blocks": len(blocks),
+            "selected_blocks": len(selected),
+            "omitted_blocks": omitted_blocks,
+            "oversized_blocks": oversized_blocks,
+            "selected_chars": len(result),
+        })
+
+    if omitted_blocks:
+        # 普通日志只记录数量，不泄露证据正文。
+        logger.info(
+            "规划证据预算选择：保留%d块，省略%d块，字符数%d/%d",
+            len(selected),
+            omitted_blocks,
+            len(result),
+            max_chars,
+        )
+
+    return result
 
 
 def create_study_plan(
@@ -983,7 +1056,20 @@ def create_study_plan(
     """
     settings = get_settings()
     logger.info("开始生成学习计划：mode=%s days=%d", mode, days)
-    plan_evidence = _limit_evidence_context(material_context)
+
+    evidence_context, acquisition_facts = unpack_material_context(material_context)
+    evidence_selection: dict = {}
+    plan_evidence = _limit_evidence_context(
+        evidence_context,
+        selection_trace=evidence_selection,
+    )
+
+    evidence_label = "当前可引用的资料证据"
+    if evidence_selection["omitted_blocks"]:
+        evidence_label += (
+            f"（预算保留{evidence_selection['selected_blocks']}块，"
+            f"省略{evidence_selection['omitted_blocks']}块）"
+        )
 
     if plan_evidence_trace is not None:
         # 保存真正放入模型输入的证据，不用未截断全文冒充实际输入。
@@ -991,8 +1077,11 @@ def create_study_plan(
         plan_evidence_trace.update({
             "trace_version": "plan-evidence-v1",
             "initial_evidence": plan_evidence,
-            "initial_context_chars": len(material_context),
+            "initial_context_chars": len(evidence_context),
+            "initial_handoff_chars": len(material_context),
             "initial_evidence_chars": len(plan_evidence),
+            "initial_evidence_selection": dict(evidence_selection),
+            "initial_acquisition_facts": acquisition_facts,
             "tool_observations": [],
             "requests": [],
         })
@@ -1027,9 +1116,9 @@ def create_study_plan(
     messages = [
         SystemMessage(content=(
             "你是学习计划智能体，依据用户目标、资料分析和原始证据制定计划。\n"
-            f"{retrieval_rules}{LEARNING_ACTIVITY_RULES}{EVIDENCE_RULES}"
+            f"{retrieval_rules}{LEARNING_ACTIVITY_RULES}{EVIDENCE_RULES}{LEARNING_TIME_RULES}"
             "计划要求：\n"
-            "1. 覆盖用户指定天数和限制；依据已证实的依赖组织顺序，"
+            "1. 按传入天数组织本阶段安排；依据已证实的依赖组织顺序，"
             "没有明确依赖时按目标安排，不要编造“必须先学”的关系。\n"
             "2. 每天最多两个任务，每项写明学习内容、具体行动和与目标匹配的完成标志。\n"
             "3. 每个任务引用支持其资料内容的原始证据；教学安排标为计划设计，"
@@ -1040,7 +1129,8 @@ def create_study_plan(
             f"学习目标：{learning_goal}\n"
             f"计划天数：{days}\n\n"
             f"资料分析结果：\n{analysis}\n\n"
-            f"当前可引用的资料证据：\n{plan_evidence}"
+            f"{evidence_label}：\n{plan_evidence}"
+            f"{format_acquisition_facts(acquisition_facts)}"
         )),
     ]
 

@@ -130,6 +130,12 @@ class Settings:
     log_level: str
     log_payloads: bool
     log_preview_chars: int
+
+    # pipeline首次分析的资料文本预算，不是整个请求的token上限。
+    analysis_initial_context_max_chars: int = 120_000
+
+    # 当前运行的摘要采用上限，与触发压缩的阈值分开。
+    memory_summary_max_chars: int = 1000
     api_force_ipv4: bool = False
 
     # False：检索可用时不预载正文；True：恢复旧方式，便于对照。
@@ -156,6 +162,12 @@ class Settings:
     # 只用于混合路径，不与向量相似度或 RRF 分数比较。
     # 动态评估：0.5 是未校准起点，正常问题被过滤时应先查看实际分数。
     rag_hybrid_min_rerank_score: float = 0.5
+
+    # 历史与资料检索分别配置；语义阈值显式设置，不复用资料阈值。
+    history_retrieval_strategy: str = "bm25"
+    history_semantic_min_similarity: float | None = None
+    # 连续失败、拒绝或复用旧结果的上限；独立于整轮工具预算。
+    interactive_max_no_progress_calls: int = 4
 
 
 @lru_cache(maxsize=1)
@@ -195,6 +207,9 @@ def get_settings() -> Settings:
         ),
         plan_max_evidence_chars=_env_int(
             "PLAN_MAX_EVIDENCE_CHARS", 120_000, minimum=1
+        ),
+        analysis_initial_context_max_chars=_env_int(
+            "ANALYSIS_INITIAL_CONTEXT_MAX_CHARS", 120_000, minimum=1
         ),
         plan_agent_max_retrieval_calls=_env_int(
             "PLAN_AGENT_MAX_RETRIEVAL_CALLS",
@@ -267,6 +282,17 @@ def get_settings() -> Settings:
             3,
             minimum=1,
         ),
+        interactive_max_no_progress_calls=_env_int(
+            "INTERACTIVE_MAX_NO_PROGRESS_CALLS", 4, minimum=1,
+        ),
+        history_retrieval_strategy=os.getenv(
+            "HISTORY_RETRIEVAL_STRATEGY", "bm25"
+        ).strip().lower(),
+        history_semantic_min_similarity=(
+            _env_float("HISTORY_SEMANTIC_MIN_SIMILARITY", 0.0)
+            if os.getenv("HISTORY_SEMANTIC_MIN_SIMILARITY", "").strip()
+            else None
+        ),
         rag_retrieval_strategy=os.getenv(
             "RAG_RETRIEVAL_STRATEGY", "dense"
         ).strip().lower(),
@@ -294,6 +320,9 @@ def get_settings() -> Settings:
         memory_summary_trigger_chars=_env_int(
             "MEMORY_SUMMARY_TRIGGER_CHARS", 2_000, minimum=1
         ),
+        memory_summary_max_chars=_env_int(
+            "MEMORY_SUMMARY_MAX_CHARS", 1000, minimum=1
+        ),
         memory_window_size=_env_int("MEMORY_WINDOW_SIZE", 6, minimum=1),
         log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
         log_payloads=_env_bool("LOG_PAYLOADS", False),
@@ -304,6 +333,24 @@ def get_settings() -> Settings:
         ),
     )
 
+    if settings.history_retrieval_strategy not in {"bm25", "semantic"}:
+        raise RuntimeError(
+            "HISTORY_RETRIEVAL_STRATEGY必须为bm25或semantic"
+        )
+
+    threshold = settings.history_semantic_min_similarity
+    if threshold is not None and not -1 <= threshold <= 1:
+        raise RuntimeError(
+            "HISTORY_SEMANTIC_MIN_SIMILARITY必须为-1至1的有限数值"
+        )
+
+    if (
+        settings.history_retrieval_strategy == "semantic"
+        and threshold is None
+    ):
+        raise RuntimeError(
+            "启用semantic时必须显式设置HISTORY_SEMANTIC_MIN_SIMILARITY"
+        )
     if settings.embedding_batch_size > 20:
         raise RuntimeError("EMBEDDING_BATCH_SIZE 不能超过 DashScope 上限 20")
     if not 0 <= settings.rag_min_relevance <= 1:

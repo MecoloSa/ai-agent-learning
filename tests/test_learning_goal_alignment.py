@@ -74,7 +74,7 @@ def test_analysis_receives_learning_activity_rules(
     else:
         monkeypatch.setattr(
             agents_module, "build_agent_tools",
-            lambda _: [],
+            lambda _, **kwargs: [],
         )
 
         def invoke_raw(llm, messages, *, stage):

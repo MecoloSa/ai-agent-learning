@@ -47,18 +47,21 @@ def prepare_agent(monkeypatch, tool: FakeTool, responses: list[AIMessage]):
     monkeypatch.setattr(
         agents_module,
         "build_agent_tools",
-        lambda _: [tool],
+        lambda _, **kwargs: [tool],
     )
     monkeypatch.setattr(
         agents_module,
         "create_llm_with_tools",
         lambda tools: object(),
     )
-    monkeypatch.setattr(
-        agents_module,
-        "_invoke_llm_raw",
-        lambda llm, messages, *, stage: next(response_iterator),
-    )
+    observed = []
+
+    def invoke(llm, messages, *, stage):
+        observed[:] = [m for m in messages if isinstance(m, ToolMessage)]
+        return next(response_iterator)
+
+    monkeypatch.setattr(agents_module, "_invoke_llm_raw", invoke)
+    return observed
 
 @pytest.fixture
 def analysis_limits(monkeypatch):
@@ -109,7 +112,7 @@ def test_agent_can_finish_without_tool_call(monkeypatch):
 
 def test_agent_returns_tool_result_to_next_round(monkeypatch):
     tool = FakeTool(result="a.md\nb.md")
-    prepare_agent(
+    observed = prepare_agent(
         monkeypatch,
         tool,
         [
@@ -126,7 +129,10 @@ def test_agent_returns_tool_result_to_next_round(monkeypatch):
     )
 
     assert analysis.startswith("根据文件清单")
-    assert "a.md" in trace
+    assert trace == ""
+    assert len(observed) == 1
+    assert observed[0].tool_call_id == "call-1"
+    assert observed[0].content == "a.md\nb.md"
     assert tool.call_count == 1
 
 
@@ -147,7 +153,7 @@ def test_agent_converts_tool_error_into_observation(monkeypatch):
     )
 
     assert "证据不足" in analysis
-    assert "工具执行出错：读取失败" in trace
+    assert "工具执行出错：读取失败" not in trace
 
 
 def test_agent_reports_repeated_call_failure(
@@ -252,10 +258,11 @@ def test_plan_trace_records_limited_initial_evidence_without_rag(monkeypatch):
     captured = []
 
     monkeypatch.setattr(agents_module, "needs_rag", lambda _: False)
-    monkeypatch.setattr(
-        agents_module, "_limit_evidence_context",
-        lambda _: "[source=a.md, chunk=0]\n保留正文",
-    )
+    retained = "[source=a.md, chunk=0]\n保留正文"
+    original_limit = agents_module._limit_evidence_context
+    def limited(context, *, selection_trace=None):
+        return original_limit(context, len(retained), selection_trace=selection_trace)
+    monkeypatch.setattr(agents_module, "_limit_evidence_context", limited)
     monkeypatch.setattr(agents_module, "create_llm", lambda: object())
 
     def invoke(llm, messages, *, stage):
@@ -264,13 +271,14 @@ def test_plan_trace_records_limited_initial_evidence_without_rag(monkeypatch):
 
     monkeypatch.setattr(agents_module, "_invoke_llm", invoke)
     agents_module.create_study_plan(
-        "分析", "截断前完整正文", "学习Agent", 1,
+        "分析", retained + "\n\n---\n\n" + "省略正文" * 100, "学习Agent", 1,
         material_dir="materials", mode="pipeline",
         plan_evidence_trace=trace,
     )
 
     assert trace["initial_evidence"] == "[source=a.md, chunk=0]\n保留正文"
     assert trace["initial_evidence"] in captured[1].content
+    assert trace["initial_evidence_selection"]["omitted_blocks"] == 1
     assert trace["tool_observations"] == []
     assert trace["requests"][0]["tool_observation_count"] == 0
 

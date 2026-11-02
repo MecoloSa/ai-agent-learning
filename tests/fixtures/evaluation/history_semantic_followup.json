@@ -1,0 +1,24 @@
+{
+  "schema_version": "history-retrieval-coverage-v1",
+  "sources": [
+    {"through_turn": 3, "user_turns": [
+      "松针练习：今天最多35分钟，只阅读和口头说明。",
+      "我只能利用通勤时听讲解，不方便看屏幕。",
+      "阅读已经完成，但我还是分不清叙述视角与人物态度。",
+      "密令蓝鲸：这条消息位于本次快照范围之外。"
+    ]},
+    {"through_turn": 2, "user_turns": [
+      "请不要安排任何书面产出，我会口头解释自己的理解。",
+      "明天的统计练习最多60分钟，可以写代码。"
+    ]}
+  ],
+  "assistant_text": "助手专属提示：星际罗盘。",
+  "cases": [
+    {"case_id": "semantic-followup-001", "group": "paraphrase", "query": "坐车途中不能盯着显示器，可以用什么方式学", "targets": [[1, 2]]},
+    {"case_id": "semantic-followup-002", "group": "paraphrase", "query": "不想动笔，打算用嘴讲明白懂了什么", "targets": [[2, 1]]},
+    {"case_id": "semantic-followup-003", "group": "paraphrase", "query": "文章看完了却仍然辨别不出讲故事的人与角色看法", "targets": [[1, 3]]},
+    {"case_id": "semantic-followup-004", "group": "paraphrase", "query": "次日那个数理项目有一小时，而且允许敲程序", "targets": [[2, 2]]},
+    {"case_id": "semantic-followup-005", "group": "negative", "query": "火山喷发温度", "targets": []},
+    {"case_id": "semantic-followup-006", "group": "negative", "query": "银河飞船导航", "targets": []}
+  ]
+}

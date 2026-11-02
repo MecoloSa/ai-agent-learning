@@ -1,0 +1,14 @@
+{
+  "schema_version": "history-readback-online-cases-v1",
+  "history": [
+    {"user": "这轮练习名为松针练习。今天最多20分钟，只能阅读与口头说明，不绘图、不编程。这些只是本轮对话条件，不要登记任务或正式反馈。", "assistant": "了解，这是本轮对话中的练习条件，不写入正式记录。"},
+    {"user": "更正：今天最多35分钟，其他条件保持。这里只更正对话条件，不修改任何计划或记录。", "assistant": "了解，可用时间改为35分钟，其余条件保持，不修改正式记录。"}
+  ],
+  "cases": [{
+    "case_id": "history-search-online-004",
+    "through_turn": 2,
+    "question": "请在来源1的历史用户消息中搜索“更正”，读取命中的完整问答，并逐字引用我更正时间的原话；不要修改计划、任务或反馈。",
+    "purpose": "不提供轮次，复用BM25先词面召回再完整读取",
+    "review": "实际search_conversation_turns命中后调用read_conversation_turn，引用更正原话和history引用；不把定位清单当原文证据。"
+  }]
+}

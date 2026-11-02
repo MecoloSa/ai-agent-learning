@@ -66,7 +66,7 @@ def test_corrected_request_uses_existing_loop_budget(monkeypatch):
             }])
         return AIMessage(content="已根据结果回答")
 
-    monkeypatch.setattr(main, "get_settings", lambda: SimpleNamespace(interactive_max_retrieval_calls=3))
+    monkeypatch.setattr(main, "get_settings", lambda: SimpleNamespace(interactive_max_retrieval_calls=3, interactive_max_no_progress_calls=4))
     monkeypatch.setattr(main, "invoke_llm_response", respond)
     trace = {}
     main._invoke_interactive_turn(

@@ -10,8 +10,12 @@ from __future__ import annotations
 # 使用允许列表，禁止直接序列化Settings：
 # Settings同时包含密钥，不能为了复现实验而把它们保存下来。
 EVAL_CONFIG_KEYS = (
+    "analysis_initial_context_max_chars",
+    "interactive_max_no_progress_calls",
     "chat_model",
     "embedding_model",
+    "history_retrieval_strategy",
+    "history_semantic_min_similarity",
     "llm_temperature",
     "request_timeout",
     "llm_retry_attempts",

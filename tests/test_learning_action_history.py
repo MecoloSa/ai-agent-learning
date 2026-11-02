@@ -115,7 +115,8 @@ def test_summary_prompt_preserves_final_decision_not_candidate(monkeypatch):
         return AIMessage(content="已确认登记对比任务；不是待确认。")
 
     monkeypatch.setattr(memory_module, "create_llm", lambda: SimpleNamespace(invoke=summarize))
-    monkeypatch.setattr(memory_module, "get_settings", lambda: SimpleNamespace(log_payloads=False))
+    monkeypatch.setattr(memory_module, "get_settings", lambda: SimpleNamespace(
+        log_payloads=False, memory_summary_max_chars=1000))
     original = state()
     pending = prepare_task_creation(original, TaskCreationArgs(title="对比两类停止"), user_message="加入待办")
     current = commit_task_creation(original, pending)

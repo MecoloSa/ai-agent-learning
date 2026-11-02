@@ -33,7 +33,11 @@ def test_static_rules_do_not_depend_on_goal_or_fixture_values(monkeypatch, retri
     assert "只有用户明确要求修改时才提交完整候选" in static
     assert "查不到不能推断事件从未发生" in static
     assert "pending只表示提议已生成" in static
-    for marker in (main.PLAN_START_TAG, main.PLAN_END_TAG, main.GOAL_START_TAG, main.GOAL_END_TAG):
+    assert static.count("propose_plan_change") == 1
+    # 新计划入口不再要求模型复制标记；旧入口兼容由会话回归验证。
+    for marker in (main.PLAN_START_TAG, main.PLAN_END_TAG):
+        assert static.count(marker) == 0
+    for marker in (main.GOAL_START_TAG, main.GOAL_END_TAG):
         assert static.count(marker) == 1
 
 

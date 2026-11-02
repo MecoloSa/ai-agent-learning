@@ -124,6 +124,8 @@ def build_retrieve_learning_context_tool(
     *,
     max_queries_per_call: int | None = None,
     max_context_chars: int | None = None,
+    evidence_blocks: list[str] | None = None,
+    acquisition_facts: list[dict] | None = None,
 ) -> BaseTool:
     """创建一个绑定资料目录的多query语义检索工具。
 
@@ -189,6 +191,11 @@ def build_retrieve_learning_context_tool(
             seen_queries.add(key)
 
         if not normalized_queries:
+            if acquisition_facts is not None:
+                acquisition_facts.append({
+                    "tool": "retrieve_learning_context", "status": "not_executed",
+                    "reason": "no_valid_queries", "executed_queries": 0,
+                })
             return "检索未执行：queries中没有有效查询。"
 
         query_limit = effective_query_limit
@@ -220,6 +227,11 @@ def build_retrieve_learning_context_tool(
             )
 
         if neighbor_window not in {0, 1}:
+            if acquisition_facts is not None:
+                acquisition_facts.append({
+                    "tool": "retrieve_learning_context", "status": "not_executed",
+                    "reason": "invalid_neighbor_window", "executed_queries": 0,
+                })
             return (
                 "检索未执行：neighbor_window只能为0或1。"
                 "0表示只取命中chunk，1表示取命中chunk±1。"
@@ -270,6 +282,13 @@ def build_retrieve_learning_context_tool(
         )
 
         if not hits:
+            if acquisition_facts is not None:
+                acquisition_facts.append({
+                    "tool": "retrieve_learning_context", "status": "no_hits",
+                    "requested_queries": original_query_count,
+                    "executed_queries": len(query_pairs), "query_limit": query_limit,
+                    "hit_count": 0, "returned_chars": 0,
+                })
             no_hit_message = (
                 "没有达到相关性阈值的新增资料。"
                 "这只表示本次实际执行的query没有命中，"
@@ -289,6 +308,7 @@ def build_retrieve_learning_context_tool(
             window=neighbor_window,
         )
 
+        formatting_trace: dict = {}
         result = rag_instance.format_documents(
             documents,
 
@@ -296,6 +316,7 @@ def build_retrieve_learning_context_tool(
             # 调用方可显式指定；未指定时默认取RAG预算的一半。
             # 多次工具结果仍会在本轮上下文中累积，另受调用次数约束。
             max_context_chars=effective_context_limit,
+            selection_trace=formatting_trace,
         )
 
         logger.debug(
@@ -306,6 +327,35 @@ def build_retrieve_learning_context_tool(
             len(documents),
             len(result),
         )
+
+        if evidence_blocks is not None and result.strip():
+            # 仅收集格式化后的资料，不把查询截断或无命中说明当作证据。
+            evidence_blocks.append(result)
+
+        # 仅记录本次可确认的受限情况，不把“有命中”判为证据充分。
+        if acquisition_facts is not None and (
+            original_query_count > len(query_pairs)
+            or not result.strip()
+            or formatting_trace.get("omitted_blocks", 0) > 0
+        ):
+            fact = {
+                "tool": "retrieve_learning_context",
+                "status": (
+                    "no_expanded_documents" if not documents
+                    else "context_budget" if not result.strip() or formatting_trace.get("omitted_blocks", 0) > 0
+                    else "query_limit"
+                ),
+                "requested_queries": original_query_count,
+                "executed_queries": len(query_pairs), "query_limit": query_limit,
+                "hit_count": len(hits), "returned_chars": len(result),
+            }
+            if formatting_trace.get("omitted_blocks", 0) > 0:
+                fact.update({
+                    "input_blocks": formatting_trace["input_blocks"],
+                    "selected_blocks": formatting_trace["selected_blocks"],
+                    "omitted_blocks": formatting_trace["omitted_blocks"],
+                })
+            acquisition_facts.append(fact)
 
         if not result:
             result = "没有检索到可返回的资料证据。"
@@ -321,7 +371,12 @@ def build_retrieve_learning_context_tool(
     return retrieve_learning_context
 
 
-def build_agent_tools(root_dir: str) -> list[BaseTool]:
+def build_agent_tools(
+    root_dir: str,
+    *,
+    evidence_blocks: list[str] | None = None,
+    acquisition_facts: list[dict] | None = None,
+) -> list[BaseTool]:
     """创建绑定资料目录的分析工具，模型不能选择或替换根目录。"""
     root = Path(root_dir).expanduser().resolve()
     if not root.is_dir():
@@ -393,12 +448,24 @@ def build_agent_tools(root_dir: str) -> list[BaseTool]:
             relative_path,
             max_chars,
         )
-        # citation 由程序生成，随正文一起交给模型。
-        return json.dumps(
+        # 模型观察与下游证据复用同一读取结果，
+        # 保留真实读取范围、来源和截断信息。
+        result = json.dumps(
             {"ok": True, "data": data},
             ensure_ascii=False,
         )
 
+        if evidence_blocks is not None and data["text"].strip():
+            evidence_blocks.append(result)
+
+        if acquisition_facts is not None and data["truncated"]:
+            acquisition_facts.append({
+                "tool": "read_learning_file", "status": "truncated",
+                "source": data["source"], "scope": data["scope"],
+                "returned_chars": data["returned_chars"],
+            })
+
+        return result
     @tool("search_learning_files", args_schema=SearchArgs)
     def bound_search_files(keyword: str) -> str:
         """在绑定目录的 TXT、MD、PY 文件中查找关键词，返回文件名和行号。"""
@@ -433,15 +500,28 @@ def build_agent_tools(root_dir: str) -> list[BaseTool]:
         bound_read_file,
         bound_search_files,
         summarize_text_statistics,
+        build_read_material_lines_tool(
+            str(root),
+            evidence_blocks=evidence_blocks,
+            acquisition_facts=acquisition_facts,
+        ),
     ]
     if needs_rag(str(root)):
-        tools.append(build_retrieve_learning_context_tool(str(root)))
-
+        tools.append(build_retrieve_learning_context_tool(
+            str(root),
+            evidence_blocks=evidence_blocks,
+            acquisition_facts=acquisition_facts,
+        ))
     # 动态评估：工具 schema 中不应再有 root_dir；
     # 正常读取应成功，额外目录参数及越界路径应被拒绝。
     return tools
 
-def build_read_material_lines_tool(root_dir: str) -> BaseTool:
+def build_read_material_lines_tool(
+    root_dir: str,
+    *,
+    evidence_blocks: list[str] | None = None,
+    acquisition_facts: list[dict] | None = None,
+) -> BaseTool:
     """创建绑定资料目录的只读工具；模型不能指定或切换根目录。"""
     resolved_root = str(Path(root_dir).expanduser().resolve())
 
@@ -473,10 +553,32 @@ def build_read_material_lines_tool(root_dir: str) -> BaseTool:
             f"[source={data['source']}, "
             f"lines={data['returned_start_line']}-{data['returned_end_line']}]"
         )
-        return json.dumps(
+        result = json.dumps(
             {"ok": True, "data": data},
             ensure_ascii=False,
         )
+
+        # 复用相同正文和程序生成的行号引用，
+        # 不另外读取或重新拼造来源。
+        if evidence_blocks is not None and any(
+            row["text"].strip() for row in data["lines"]
+        ):
+            evidence_blocks.append(result)
+
+        if acquisition_facts is not None and data["truncated"]:
+            acquisition_facts.append({
+                "tool": "read_material_lines",
+                "status": "truncated",
+                "source": data["source"],
+                "scope": "lines",
+                "returned_start_line": data["returned_start_line"],
+                "returned_end_line": data["returned_end_line"],
+                "returned_chars": sum(
+                    len(row["text"]) for row in data["lines"]
+                ),
+            })
+
+        return result
 
     return read_lines
 

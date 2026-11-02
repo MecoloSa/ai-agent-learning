@@ -21,6 +21,34 @@ class MemoryData(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+class ArchiveSource(MemoryData):
+    archive_id: str = Field(pattern=r"^[0-9a-f]{32}$", strict=True)
+    session_id: str = Field(pattern=r"^[0-9a-f]{32}$", strict=True)
+    # 快照只授权读取当时已提交的前缀，不能自动看到后续追加。
+    through_turn: int = Field(gt=0, strict=True)
+
+
+class PendingArchiveTurn(MemoryData):
+    archive_id: str = Field(pattern=r"^[0-9a-f]{32}$", strict=True)
+    session_id: str = Field(pattern=r"^[0-9a-f]{32}$", strict=True)
+    turn_id: str = Field(pattern=r"^[0-9a-f]{32}$", strict=True)
+    user_text: str = Field(min_length=1, strict=True)
+    assistant_text: str = Field(min_length=1, strict=True)
+
+
+class HistoryArchiveState(MemoryData):
+    enabled: bool = Field(default=True, strict=True)
+    sources: tuple[ArchiveSource, ...] = ()
+    pending: PendingArchiveTurn | None = None
+
+    @model_validator(mode="after")
+    def unique_sources(self):
+        keys = [(s.archive_id, s.session_id) for s in self.sources]
+        if len(keys) != len(set(keys)):
+            raise ValueError("原文归档来源重复")
+        return self
+
+
 class StoredMessage(MemoryData):
     role: Literal["human", "ai"]
     content: str
@@ -34,6 +62,7 @@ class MemorySnapshot(MemoryData):
     messages: tuple[StoredMessage, ...] = ()
     summary: str = ""
     prompt_history: tuple[str, ...] = ()
+    history_archive: HistoryArchiveState | None = None
 
     @model_validator(mode="after")
     def require_complete_turns(self) -> MemorySnapshot:

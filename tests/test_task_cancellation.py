@@ -119,5 +119,5 @@ def test_old_snapshots_default_to_not_cancelled(tmp_path, version):
 def test_v6_save_and_restore_preserves_cancelled_task(tmp_path):
     updated = cancel(state())
     path = save_learning_state(updated, tmp_path / "new.json")
-    assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == "learning-state-v7"
+    assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == "learning-state-v8"
     assert load_learning_state(path) == updated

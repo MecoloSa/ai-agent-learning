@@ -26,7 +26,7 @@ def test_tool_budget_and_duplicate_guard_reset_for_each_user_turn(monkeypatch):
         }]),
         AIMessage(content="第二轮回答"),
     ])
-    monkeypatch.setattr(main, "get_settings", lambda: SimpleNamespace(interactive_max_retrieval_calls=1))
+    monkeypatch.setattr(main, "get_settings", lambda: SimpleNamespace(interactive_max_retrieval_calls=1, interactive_max_no_progress_calls=4))
     monkeypatch.setattr(main, "invoke_llm_response", lambda *a, **kw: next(responses))
     tool = Tool()
     traces = []
