@@ -404,8 +404,13 @@ def create_llm(*, role: str = "standard") -> ChatOpenAI:
 
     model_by_role = {
         "standard": settings.chat_model,
+        "auxiliary": os.getenv("AUXILIARY_MODEL", "deepseek-v4.1-flash-1017").strip(),
         "feedback": settings.feedback_model,
         "enhanced": settings.enhanced_model,
+        "workspace_tasks": os.getenv("WORKSPACE_TASK_MODEL", "").strip() or settings.feedback_model,
+        "document_structure": os.getenv("DOCUMENT_STRUCTURE_MODEL", "deepseek-v4.1-flash-1017").strip(),
+        "workspace_title": "deepseek-v4.1-flash-1017",
+        "review": "deepseek-v4.1-flash-1017",
     }
     if role not in model_by_role:
         raise ValueError(f"未知模型用途：{role}")
@@ -436,7 +441,7 @@ def create_llm(*, role: str = "standard") -> ChatOpenAI:
         base_url=_required_env("CHAT_BASE_URL"),
         streaming=False,
         temperature=settings.llm_temperature,
-        timeout=settings.request_timeout,
+        timeout=min(settings.request_timeout, 15) if role in {"workspace_title", "review"} else settings.request_timeout,
         max_retries=0,  # 保留现有外层重试设置，不叠加 SDK 重试。
         **network_options,
     )

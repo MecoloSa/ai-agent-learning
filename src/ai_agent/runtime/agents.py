@@ -3,14 +3,19 @@ plan_evidence_trace仅用于本地实验审计，不影响原有返回值。"""
 
 from __future__ import annotations
 
+from functools import partial
 from pathlib import Path
 
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from tenacity import (
-    retry, retry_if_exception_type, stop_after_attempt, wait_exponential, before_log, before_sleep_log
+    retry, Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential, before_log, before_sleep_log
 )
 
-from ai_agent.config import create_llm, create_llm_with_tools, get_settings
+from ai_agent.config import (
+    create_llm as _create_llm,
+    create_llm_with_tools as _create_llm_with_tools,
+    get_settings,
+)
 from ai_agent.resources.tools import (
     read_learning_file,
     list_learning_files,
@@ -20,10 +25,11 @@ from ai_agent.resources.tools import (
 )
 from ai_agent.retrieval.rag import LearningRAG, needs_rag
 from ai_agent.runtime.plan_validation import finalize_plan_output
-from ai_agent.runtime.prompt_rules import EVIDENCE_RULES, LEARNING_TIME_RULES
+from ai_agent.runtime.prompt_rules import EVIDENCE_RULES, LEARNING_TIME_RULES, budget_notice
 from ai_agent.runtime.context_handoff import (
     pack_material_context, unpack_material_context, format_acquisition_facts,
 )
+from ai_agent.runtime.request_context import prepare_model_messages
 # 用于识别当前语料实际包含哪些文件类型，这里只读取文件路径。
 from ai_agent.resources.materials import (
     iter_material_files,
@@ -37,6 +43,10 @@ import json
 import re
 
 logger = logging.getLogger("ai_agent.agents")
+create_llm = partial(_create_llm, role="auxiliary")
+create_llm_with_tools = partial(_create_llm_with_tools, role="auxiliary")
+
+
 def _content_to_text(content) -> str:
     """把 LangChain 的字符串或结构化 content 转成可记录文本。"""
     if isinstance(content, str):
@@ -216,18 +226,6 @@ settings = get_settings()
 MAX_TOOL_ROUNDS = settings.agent_max_tool_rounds
 MAX_PLAN_EVIDENCE_CHARS = settings.plan_max_evidence_chars
 
-# 仅适用于一次资料分析任务，不限制整个交互会话。
-# 动态评估：正常任务若频繁触发某工具上限，应检查是否确有证据缺口，
-# 再局部调整额度；不要直接提高所有工具的预算。
-ANALYSIS_TOOL_LIMITS: dict[str, int] = {
-    "list_learning_files": 2,
-    "read_learning_file": 6,
-    "read_material_lines": 6,
-    "search_learning_files": 4,
-    "retrieve_learning_context": 3,
-    "summarize_text_statistics": 2,
-}
-
 RETRY_STOP = stop_after_attempt(settings.llm_retry_attempts)
 RETRY_WAIT = wait_exponential(
     multiplier=1,
@@ -239,7 +237,15 @@ class LLMInvocationError(RuntimeError):
     """模型调用最终失败时抛出，携带面向用户的原因。"""
 
 class RetryableLLMError(LLMInvocationError):
-    """可重试错误（超时、限流、服务端错误等）；@retry 只重试本类。"""
+    """统一尝试额度内可重试的请求故障。"""
+
+
+class EmptyLLMResponseError(LLMInvocationError):
+    """上游无正文也无工具请求；有界恢复后仍为空时明确失败。"""
+
+
+class _RetryEmptyResponse(RetryableLLMError):
+    """仅用于单次调用内部的第一次空响应恢复。"""
 
 class AnalysisExecutionError(RuntimeError):
     """程序确认分析未完成；调用方必须停止后续计划生成。"""
@@ -269,23 +275,13 @@ def _build_analysis_budget_status(
     """从程序真实计数生成模型可见预算，不让模型自行记账。"""
     remaining_total = max(0, total_limit - executed_calls)
 
-    # 单工具实际可用次数同时受自身额度与总额度约束。
+    # 各工具共享一个总预算；下列值不能相加理解为额外配额。
     # 只展示本次绑定的工具，避免暗示其他工具也可以调用。
-    remaining_by_tool = {
-        name: min(
-            remaining_total,
-            max(
-                0,
-                ANALYSIS_TOOL_LIMITS.get(name, 4)
-                - tool_counts.get(name, 0),
-            ),
-        )
-        for name in tool_names
-    }
+    remaining_by_tool = {name: remaining_total for name in tool_names}
 
     notices = [
         "额度是上限，不必用满；批量请求中的每个执行分别计数。",
-        "同参请求仍会被拒绝；剩余额度不代表允许重复执行。",
+        "同参成功结果和确定性错误不重复执行，暂时性异常依据回执中的retryable决定。",
     ]
 
     if remaining_total == 0:
@@ -298,19 +294,6 @@ def _build_analysis_budget_status(
             "所有工具合计最多还可执行1次，"
             "请优先补足最关键的证据缺口。"
         )
-    else:
-        last_chance_tools = [
-            name
-            for name, count in remaining_by_tool.items()
-            if count == 1
-        ]
-        if last_chance_tools:
-            notices.append(
-                "以下工具各自最多还可执行1次："
-                + "、".join(last_chance_tools)
-                + "。请优先处理必要的证据缺口。"
-            )
-
     # 工具额度未耗尽，也可能先达到模型轮数上限。
     # 明确告知：最后一轮调用工具后，不会额外赠送一次模型收尾。
     if remaining_model_rounds == 1:
@@ -333,18 +316,10 @@ def _is_retryable(exc: BaseException) -> bool:
                         "503", "504", "service not available", "connection")
     return any(m in text for m in retryable_makers)
 
-@retry(
-    retry=retry_if_exception_type(RetryableLLMError),
-    stop=RETRY_STOP,
-    wait=RETRY_WAIT,
-    before_sleep=before_sleep_log(logger, logging.WARNING),
-    reraise=True,
-)
-def _invoke_llm_raw(llm, messages, *, stage: str):
-    """带重试的模型调用包装：返回完整响应对象（含 tool_calls）。
+def _invoke_llm_once(llm, messages, *, stage: str, stream_observer=None):
+    """执行一次请求并归类外部错误；重试只由外层统一管理。
 
-    Agentic 循环需要检查 response.tool_calls，因此必须保留完整对象；
-    纯文本调用（如 _invoke_llm）再从这里取 .content。
+    保留完整响应及tool_calls，不能只取文本而丢弃模型的工具决策。
     """
     try:
         import time
@@ -362,7 +337,19 @@ def _invoke_llm_raw(llm, messages, *, stage: str):
         )
 
         start = time.perf_counter()
-        response = llm.invoke(messages)
+        if stream_observer is None:
+            response = llm.invoke(messages)
+        else:
+            from langchain_core.messages import AIMessageChunk, message_chunk_to_message
+
+            stream_observer("phase", stage)
+            combined = None
+            for chunk in llm.stream(messages):
+                combined = chunk if combined is None else combined + chunk
+                # 预览仅包含公开文本。完整响应仍交给原工具循环与来源核验。
+                if chunk.text:
+                    stream_observer("delta", chunk.text)
+            response = message_chunk_to_message(combined if combined is not None else AIMessageChunk(content=""))
         elapsed = time.perf_counter() - start
 
         _log_model_response(
@@ -399,17 +386,83 @@ def _invoke_llm_raw(llm, messages, *, stage: str):
             f"{stage} 模型调用失败：{exc}"
         ) from exc
 
+
+def _aggregate_attempt_usage(attempts):
+    """任一次请求用量未知则总量未知，不能把超时或缺字段按0计算。"""
+    fields = ("input_tokens", "output_tokens", "total_tokens")
+    usages = [attempt.get("usage") for attempt in attempts]
+    if not all(isinstance(usage, dict) and all(
+        type(usage.get(field)) is int and usage[field] >= 0 for field in fields
+    ) for usage in usages):
+        return None
+    return {field: sum(usage[field] for usage in usages) for field in fields}
+
+
+def _invoke_llm_raw(llm, messages, *, stage: str, stream_observer=None):
+    """网络重试和最多一次空响应恢复共享原有尝试总额度，不重跑工具。"""
+    attempts = []
+    empty_count = 0
+    try:
+        # 单一重试层，避免“网络重试×空响应重试”造成请求次数相乘。
+        for attempt in Retrying(
+            retry=retry_if_exception_type(RetryableLLMError), stop=RETRY_STOP,
+            wait=lambda state: 0 if isinstance(state.outcome.exception(), _RetryEmptyResponse) else RETRY_WAIT(state),
+            before_sleep=before_sleep_log(logger, logging.WARNING), reraise=True,
+        ):
+            with attempt:
+                entry = {"index": len(attempts) + 1}
+                attempts.append(entry)
+                try:
+                    options = {"stream_observer": stream_observer} if stream_observer is not None else {}
+                    response = _invoke_llm_once(llm, messages, stage=stage, **options)
+                except LLMInvocationError as exc:
+                    entry.update(status="failed", error_type=type(exc).__name__, usage=None)
+                    raise
+                entry["usage"] = getattr(response, "usage_metadata", None)
+                content = response.content
+                empty = ((isinstance(content, str) and not content.strip()) or content == [])
+                eligible = (getattr(response, "response_metadata", {}).get("finish_reason") in (None, "stop")
+                    and not getattr(response, "additional_kwargs", {}).get("refusal"))
+                if empty and eligible and not getattr(response, "tool_calls", None) and not getattr(response, "invalid_tool_calls", None):
+                    empty_count += 1
+                    entry["status"] = "empty_response"
+                    if empty_count == 1:
+                        raise _RetryEmptyResponse(f"{stage} 上游返回空响应；在剩余尝试额度内原请求最多重发一次")
+                    raise EmptyLLMResponseError(f"{stage} 连续返回空响应，恢复终止；未生成有效回答")
+                entry["status"] = "completed"
+                if len(attempts) > 1:
+                    # usage_metadata表示此次逻辑调用累计用量；保留最终提供商原值供审计。
+                    provider_usage = getattr(response, "usage_metadata", None)
+                    response.response_metadata = {**response.response_metadata,
+                        "provider_usage_metadata": provider_usage,
+                        "invocation_audit": {"attempts": attempts, "attempt_count": len(attempts),
+                            "empty_responses": empty_count, "usage_complete": _aggregate_attempt_usage(attempts) is not None}}
+                    response.usage_metadata = _aggregate_attempt_usage(attempts)
+                return response
+    except LLMInvocationError as exc:
+        audit = {"attempts": attempts, "attempt_count": len(attempts),
+            "empty_responses": empty_count, "aggregate_usage": _aggregate_attempt_usage(attempts)}
+        if isinstance(exc, _RetryEmptyResponse):
+            exhausted = EmptyLLMResponseError(f"{stage} 上游返回空响应且尝试额度已用尽")
+            exhausted.invocation_audit = audit
+            raise exhausted from None
+        exc.invocation_audit = audit
+        raise
+
 def invoke_llm_response(
     llm,
     messages,
     *,
     stage: str,
+    stream_observer=None,
 ):
     """公开的统一模型调用入口，保留响应对象和工具调用信息。"""
+    options = {"stream_observer": stream_observer} if stream_observer is not None else {}
     return _invoke_llm_raw(
         llm,
         messages,
         stage=stage,
+        **options,
     )
 
 def _invoke_llm(llm, messages, *, stage:str) -> str:
@@ -789,20 +842,10 @@ def analyse_materials_agentic(material_dir:str, learning_goal:str) -> tuple[str,
     ]
     seen_signatures: set[tuple[str, str]] = set()
     tool_counts: dict[str, int] = {}
+    attempts_by_signature: dict[tuple[str, str], int] = {}
     executed_calls = 0
     no_progress_rounds = 0
     total_limit = settings.agent_max_tool_calls
-
-    # 提示词只是提前告知；真正的限制在下面的执行前检查中。
-    messages[0] = SystemMessage(content=(
-        messages[0].content
-        + "\n本次分析最多执行工具 "
-        + str(total_limit)
-        + " 次；各工具上限："
-        + json.dumps(ANALYSIS_TOOL_LIMITS, ensure_ascii=False)
-        + "。完全相同的工具名和参数不会重复执行，包括失败过的调用。"
-        + "请复用已有结果，或根据错误修正参数；证据充分时直接输出分析。"
-    ))
 
     # 保存不含动态预算的系统提示，防止下一轮叠加上一轮预算。
     base_system_content = messages[0].content
@@ -819,9 +862,10 @@ def analyse_materials_agentic(material_dir:str, learning_goal:str) -> tuple[str,
         # 只替换最新状态，不向历史反复追加预算消息。
         # 不修改工具结果，也不把预算提示放入下游资料证据。
         messages[0] = SystemMessage(content=(
-            base_system_content
-            + "\n[程序实时预算；不是资料证据]\n"
-            + json.dumps(budget_status, ensure_ascii=False)
+            base_system_content + budget_notice(
+                budget_status["remaining_total"],
+                budget_status["remaining_model_rounds_including_current"],
+            )
         ))
 
         # 动态评估：检查临近额度耗尽时是否减少无效请求。
@@ -829,7 +873,12 @@ def analyse_materials_agentic(material_dir:str, learning_goal:str) -> tuple[str,
         logger.debug("分析预算状态：%s", budget_status)
 
         response = _invoke_llm_raw(
-            llm, messages, stage=f"资料分析-第{round_idx + 1}轮"
+            llm,
+            prepare_model_messages(
+                messages,
+                tool_result_formatter=stage_evidence,
+            ),
+            stage=f"资料分析-第{round_idx + 1}轮",
         )
         messages.append(response)
 
@@ -861,8 +910,6 @@ def analyse_materials_agentic(material_dir:str, learning_goal:str) -> tuple[str,
             )
             tool = tool_map.get(name)
 
-            # 新工具尚未配置专属额度时，仍受到默认额度和总预算保护。
-            per_tool_limit = ANALYSIS_TOOL_LIMITS.get(name, 4)
             reason = None
 
             if tool is None:
@@ -872,8 +919,6 @@ def analyse_materials_agentic(material_dir:str, learning_goal:str) -> tuple[str,
             elif executed_calls >= total_limit:
                 reason = "tool_budget_exceeded"
                 total_budget_denied = True
-            elif tool_counts.get(name, 0) >= per_tool_limit:
-                reason = "per_tool_budget_exceeded"
 
             if reason is not None:
                 denied_reasons.append(reason)
@@ -888,7 +933,6 @@ def analyse_materials_agentic(material_dir:str, learning_goal:str) -> tuple[str,
                     "executed_total": executed_calls,
                     "total_limit": total_limit,
                     "tool_executed": tool_counts.get(name, 0),
-                    "tool_limit": per_tool_limit,
                     "available_tools": list(tool_map),
                     "instruction": (
                         "复用已有结果、修正参数或使用其他工具；"
@@ -902,25 +946,35 @@ def analyse_materials_agentic(material_dir:str, learning_goal:str) -> tuple[str,
                 )
             else:
                 # invoke 抛异常也消耗一次执行额度：失败同样有成本。
-                # 在执行前登记签名，避免同参失败触发无意义的盲目重试。
+                # 执行前登记；仅明确暂时性异常且未达重试上限时允许再试。
                 seen_signatures.add(signature)
+                attempts_by_signature[signature] = attempts_by_signature.get(signature, 0) + 1
                 executed_calls += 1
                 executed_this_round += 1
                 tool_counts[name] = tool_counts.get(name, 0) + 1
 
                 logger.debug(
-                    "分析工具执行：tool=%s total=%d/%d tool_count=%d/%d",
+                    "分析工具执行：tool=%s total=%d/%d tool_count=%d",
                     name,
                     executed_calls,
                     total_limit,
                     tool_counts[name],
-                    per_tool_limit,
                 )
 
                 try:
                     result = str(tool.invoke(args))
                 except Exception as exc:
-                    result = f"工具执行出错：{exc}"
+                    # 只读工具最多真实尝试3次，失败也消耗原总预算。
+                    retryable = (
+                        isinstance(exc, (TimeoutError, ConnectionError))
+                        and attempts_by_signature[signature] < 3
+                    )
+                    if retryable:
+                        seen_signatures.discard(signature)
+                    result = json.dumps({"ok": False, "error": {
+                        "code": type(exc).__name__, "retryable": retryable,
+                        "message": "本次未取得结果；可在剩余预算内按错误类型调整。",
+                    }}, ensure_ascii=False)
                     logger.warning("工具 %s 执行异常：%s", name, exc)
                     # 不转发异常原文中的本机绝对路径或其他实现细节。
                     fact = {"tool": name, "status": "failed", "reason": type(exc).__name__}
@@ -967,18 +1021,69 @@ def analyse_materials_agentic(material_dir:str, learning_goal:str) -> tuple[str,
         "资料分析达到模型轮数上限，尚未生成结论；未生成学习计划。",
     )
 
+def stage_evidence(block: str) -> str:
+    """整理完整的已知读取回执；不完整、失败或未知结构原样保留。"""
+    try:
+        payload = json.loads(block)
+    except (ValueError, TypeError):
+        return block
+    if not isinstance(payload, dict) or set(payload) != {"ok", "data"} or payload["ok"] is not True:
+        return block
+    data = payload["data"]
+    if not isinstance(data, dict) or not isinstance(data.get("citation"), str):
+        return block
+    if not isinstance(data.get("source"), str) or type(data.get("truncated")) is not bool:
+        return block
+    # 不完整读取保留原始结构；不强制模型继续读取。
+    if data["truncated"]:
+        return block
+    prefix_keys = {"source", "citation", "scope", "returned_chars", "truncated", "text"}
+    line_keys = {"source", "citation", "requested_start_line", "requested_end_line",
+                 "returned_start_line", "returned_end_line", "truncated", "lines"}
+    if set(data) == prefix_keys and data["scope"] == "prefix" and isinstance(data["text"], str):
+        return (f"{data['citation']}\n读取范围：文件开头；截断={data['truncated']}\n"
+                + data["text"])
+    if set(data) != line_keys or not isinstance(data["lines"], list) or not data["lines"]:
+        return block
+    rows = data["lines"]
+    if not all(isinstance(row, dict) and set(row) == {"line", "text", "partial"}
+               and type(row["line"]) is int and isinstance(row["text"], str)
+               and type(row["partial"]) is bool for row in rows):
+        return block
+    # 部分行也不转换成普通完整正文表示。
+    if any(row["partial"] for row in rows):
+        return block
+    if (rows[0]["line"] != data["returned_start_line"]
+            or rows[-1]["line"] != data["returned_end_line"]
+            or any(right["line"] != left["line"] + 1 for left, right in zip(rows, rows[1:]))):
+        return block
+    # 保留实际范围和每行partial，不把请求结束位置当成实际取得的位置。
+    header = (f"{data['citation']}\n实际行范围：{data['returned_start_line']}-"
+              f"{data['returned_end_line']}；截断={data['truncated']}\n")
+    return header + "\n".join(
+        f"{row['line']}{'（部分）' if row['partial'] else ''}: {row['text']}" for row in rows
+    )
+
+
 def _limit_evidence_context(
     context: str,
     max_chars: int = MAX_PLAN_EVIDENCE_CHARS,
     *,
     selection_trace: dict | None = None,
 ) -> str:
-    """按原顺序选择完整证据块；放不下时继续检查后续块。"""
+    """完全重复块只保留首次，再按原顺序选择预算内完整块。"""
     if type(max_chars) is not int or max_chars <= 0:
         raise ValueError("max_chars 必须为正整数")
 
     separator = "\n\n---\n\n"
     blocks = [block for block in context.split(separator) if block.strip()]
+
+    input_block_count = len(blocks)
+    # 整块精确比较并保留首次顺序；不合并来源、空白差异或重叠范围。
+    blocks = list(dict.fromkeys(blocks))
+    duplicate_blocks = input_block_count - len(blocks)
+    # 只整理规划输入副本；原始工具回执和material_context保持原样。
+    blocks = [stage_evidence(block) for block in blocks]
 
     selected: list[str] = []
     current_length = 0
@@ -1001,9 +1106,11 @@ def _limit_evidence_context(
 
     if selection_trace is not None:
         selection_trace.update({
-            "selection_policy": "ordered_whole_blocks",
+            "selection_policy": "exact_unique_stage_reading_blocks",
             "max_chars": max_chars,
-            "input_blocks": len(blocks),
+            "input_blocks": input_block_count,
+            "unique_blocks": len(blocks),
+            "duplicate_blocks": duplicate_blocks,
             "selected_blocks": len(selected),
             "omitted_blocks": omitted_blocks,
             "oversized_blocks": oversized_blocks,
@@ -1104,11 +1211,10 @@ def create_study_plan(
 
     retrieval_rules = (
         "需要补充证据时调用retrieve_learning_context。"
-        f"最多调用{max_retrieval_calls}次，单次最多{settings.plan_max_queries_per_tool_call}条query。"
         "只查询可能改变计划的重要缺口，合并近义问题并按重要程度排序。"
         "互补且独立的缺口可批量提交；依赖前次结果的查询分步决定，不强制凑成同一批。"
         "query应明确所需资料信息，不能只要求生成计划；不重复已有查询。"
-        "neighbor_window=0只取命中块，1补相邻块。证据充分就直接生成计划。\n"
+        "证据充分就直接生成计划。\n"
         if retrieval_tool is not None else
         "当前未启用检索工具；依据已有证据制定计划，缺口如实说明。\n"
     )
@@ -1120,7 +1226,7 @@ def create_study_plan(
             "计划要求：\n"
             "1. 按传入天数组织本阶段安排；依据已证实的依赖组织顺序，"
             "没有明确依赖时按目标安排，不要编造“必须先学”的关系。\n"
-            "2. 每天最多两个任务，每项写明学习内容、具体行动和与目标匹配的完成标志。\n"
+            "2. 根据目标与可用时间组织任务，每项写明学习内容、具体行动和与目标匹配的完成标志。\n"
             "3. 每个任务引用支持其资料内容的原始证据；教学安排标为计划设计，"
             "不将自行推导的内容描述成资料原文或官方要求。\n"
             "4. 证据不足时说明限制；最终仅输出完整计划及必要说明，不输出内部判断过程。"
@@ -1186,9 +1292,12 @@ def create_study_plan(
         stage = f"学习计划智能体-检索判断{used_retrieval_calls + 1}"
         capture_evidence_before_request(stage)
 
+        notice = budget_notice(max_retrieval_calls - used_retrieval_calls)
+        # 提示是本次请求视图的一部分，不累计到工具历史。
+        decision_messages = [*messages, HumanMessage(content=notice)] if notice else messages
         response = _invoke_llm_raw(
             tool_llm,
-            messages,
+            decision_messages,
             stage=stage,
         )
         messages.append(response)

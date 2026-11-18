@@ -8,6 +8,7 @@ stdio的stdout专供协议消息，不能向其中print调试内容。
 from __future__ import annotations
 
 import argparse
+import json
 
 from mcp.server.fastmcp import FastMCP
 from pydantic import StrictInt
@@ -36,7 +37,7 @@ def create_server(material_dir: str) -> FastMCP:
         """
         try:
             # 只增加协议入口，业务结果仍由原工具生成。
-            return local_reader.invoke({
+            raw = local_reader.invoke({
                 "relative_path": relative_path,
                 "start_line": start_line,
                 "end_line": end_line,
@@ -47,6 +48,11 @@ def create_server(material_dir: str) -> FastMCP:
             raise ValueError(
                 f"资料读取失败：{type(exc).__name__}"
             ) from None
+        # 本地回执是普通 JSON；MCP 入口仍将业务失败映射为协议工具错误。
+        result = json.loads(raw)
+        if result.get("ok") is False:
+            raise ValueError(f"资料读取失败：{result['error']['code']}")
+        return raw
 
     # 动态评估：比较本地/MCP结果、错误标记及额外进程开销。
     # 协议正常返回不等于资料足够，更不代表最终回答正确。

@@ -1412,6 +1412,7 @@ class LearningRAG:
         """
         separator = "\n\n---\n\n"
         sections: list[str] = []
+        selected_sources: list[dict[str, str]] = []
         used_chars = 0
 
         for document in documents:
@@ -1473,6 +1474,18 @@ class LearningRAG:
 
             sections.append(section)
             used_chars += added_chars
+            # 预算筛选后登记来源，不把未返回的候选块列为已查阅。
+            # 元数据来自检索文档，不解析正文中的类似引用标记。
+            source = metadata.get("source")
+            if isinstance(source, str) and source.strip():
+                location_parts = [f"source={source}"]
+                if metadata.get("page") is not None:
+                    location_parts.append(f"page={metadata['page']}")
+                if metadata.get("chunk_index") is not None:
+                    location_parts.append(f"chunk={metadata['chunk_index']}")
+                selected_sources.append({
+                    "citation": f"[{', '.join(location_parts)}]",
+                })
 
         logger.debug(
             "检索上下文格式化完成 documents=%s used_chars=%s max_chars=%s",
@@ -1488,6 +1501,7 @@ class LearningRAG:
                 "omitted_blocks": len(documents) - len(sections),
                 "selected_chars": used_chars,
                 "max_chars": max_context_chars,
+                "selected_sources": selected_sources,
             })
 
         # 保留项目现有证据块分隔符。

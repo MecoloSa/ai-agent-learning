@@ -77,6 +77,7 @@ def read_pdf_pages(
         if start_page > total_pages:
             raise ValueError("起始页超出PDF范围")
 
+        page_labels = getattr(reader, "page_labels", None)
         effective_end = min(end_page, total_pages)
 
         for page_no in range(start_page, effective_end + 1):
@@ -98,6 +99,7 @@ def read_pdf_pages(
 
             rows.append({
                 "page": page_no,
+                **({"pdf_page_label": page_labels[page_no - 1]} if page_labels else {}),
                 "text": returned_text,
                 "text_status": (
                     "extracted" if text.strip() else "no_text"

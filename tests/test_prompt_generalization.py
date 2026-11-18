@@ -23,12 +23,14 @@ def test_static_rules_do_not_depend_on_goal_or_fixture_values(monkeypatch, retri
     ))
     prompt = main._build_interactive_system_prompt("分析占位", "计划占位", "正文占位", goal,
         retrieval_available=retrieval, on_demand_eligible=True)
-    static = prompt.split("当前学习目标：", 1)[0]
+    static = prompt.split("资料分析结果：", 1)[0]
     assert goal not in static
     assert "40分钟" not in static and "60分钟" not in static
     assert "task-001" not in static and "book.pdf" not in static
-    assert "所有工具合计最多调用4次" in static
-    assert rules.MATERIAL_ACCESS_RULES in static and rules.PDF_CITATION_RULES in static
+    assert "所有工具合计最多调用4次" not in static
+    assert rules.MATERIAL_ACCESS_RULES in static
+    assert rules.PDF_CITATION_RULES not in static
+    assert "本轮工具返回的资料来源由程序在文末列出" in static
     assert "不能用登记任务表代替当前计划概括" in static
     assert "只有用户明确要求修改时才提交完整候选" in static
     assert "查不到不能推断事件从未发生" in static

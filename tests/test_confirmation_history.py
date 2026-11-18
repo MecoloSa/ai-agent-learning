@@ -43,6 +43,37 @@ def query(current, **kwargs):
     return json.loads(read_confirmation_history(current, ConfirmationHistoryArgs(**kwargs)))["data"]
 
 
+@pytest.mark.parametrize("decision,reason,revision", [
+    ("confirmed", "user_confirmed", 2),
+    ("cancelled", "user_declined", 1),
+    ("cancelled", "input_ended", 1),
+    ("invalid", "not_recorded", 1),
+    ("unchanged", "not_recorded", 1),
+])
+def test_real_context_receipt_writer_round_trips(decision, reason, revision):
+    """用实际写入函数构造回执，防止手写fixture掩盖生产者漏字段。"""
+    reply = main._context_change_history(
+        "候选正文，不等于正式计划", decision, revision,
+        confirmation_trace={"reason": reason},
+    )
+    current = state()
+    memory = current.conversation_memory.model_copy(update={"messages": (
+        StoredMessage(role="human", content="请调整计划"),
+        StoredMessage(role="ai", content=reply),
+    )})
+    record = query(current.model_copy(update={"conversation_memory": memory}))["records"][0]
+    assert record["decision"] == decision
+    assert record["context_revision"] == revision
+    assert record["confirmation_reason"] == reason
+    assert current.context_revision == 1
+
+
+def test_legacy_context_receipt_does_not_invent_missing_fields():
+    record = query(state())["records"][0]
+    assert record["decision"] is None
+    assert record["context_revision"] is None
+
+
 def test_window_hidden_receipt_is_read_without_changing_state():
     old = state()
     before = old.model_dump()

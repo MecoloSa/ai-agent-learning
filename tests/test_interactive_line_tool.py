@@ -114,7 +114,13 @@ def test_interactive_reader_result_reaches_model(
         read_tool=build_read_material_lines_tool(str(root)),
     )
 
-    assert result == "依据实际工具结果回答。"
+    if expected_ok:
+        body, footer = result.split("\n\n【程序整理的本轮读取来源】\n")
+        assert body == "依据实际工具结果回答。"
+        assert "- [source=notes.md, lines=2-3]" in footer
+    else:
+        assert result == "依据实际工具结果回答。"
+        assert "程序整理的本轮读取来源" not in result
     assert len(calls) == 2
 
 @pytest.mark.parametrize(
@@ -218,7 +224,9 @@ def test_explicit_read_requires_successful_execution(
     assert call_count == expected_calls
 
     if scenario == "corrected":
-        assert result == "实际只返回第3行：第三行。"
+        body, footer = result.split("\n\n【程序整理的本轮读取来源】\n")
+        assert body == "实际只返回第3行：第三行。"
+        assert "- [source=notes.md, lines=3-3]" in footer
     else:
         assert "不能确认" in result
         assert "文件共有10行" not in result

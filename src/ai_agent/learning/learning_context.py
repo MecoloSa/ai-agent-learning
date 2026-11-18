@@ -63,11 +63,15 @@ def select_context_feedback(state: LearningState) -> dict[str, list[dict]]:
     return groups
 
 def build_learning_state_message(state: LearningState) -> HumanMessage:
-    """生成当前任务状态的数据消息，不重复携带整份学习计划。"""
+    """从真实状态生成本轮唯一的当前正式状态视图。"""
     data = {
         "context_type": "current_learning_state",
         "context_revision": state.context_revision,
         "current_date": learning_today().isoformat(),
+        # 当前值由状态对象提供，不从计划标题或历史助手回答推断。
+        "learning_goal": state.learning_goal,
+        "plan_markdown": state.plan_markdown,
+        "plan_status": "active",
         "tasks_need_review": state.tasks_need_review,
 
         **select_context_feedback(state),
@@ -77,24 +81,15 @@ def build_learning_state_message(state: LearningState) -> HumanMessage:
             "分组只记录来源版本；当前适用性需结合用户请求核对，不按版本号判定有效期。"
             "本消息只展示当天未被替代的记录，不是完整历史；冲突或适用性不明时先核对。"
         ),
-        # 声明这组数据的职责，不复制计划正文，也不推断任务与活动的映射。
+        # 登记任务用于说明历史进度，不推断它与计划活动的一一对应关系。
         "tasks_role": (
+            "from_plan=true 标识已确认的计划任务。未标记的任务独立登记；"
+            "取消的任务只保留历史。具体任务的估时和状态以任务字段为准，计划正文提供整体安排。"
+            if any(task.from_plan for task in state.tasks) else
             "已登记任务及历史进度，不等于当前计划的活动或今日安排；"
             "未取消也不代表今天要执行。实际安排读取当前计划正文。"
         ),
-        "tasks": [
-            {
-                "task_id": task.task_id,
-                "title": task.title,
-                "activity_status": task.activity_status,
-                "understanding_status": task.understanding_status,
-                "latest_feedback": task.latest_feedback,
-                "feedback_source": task.feedback_source,
-                "is_cancelled": task.is_cancelled,
-                "cancellation_reason": task.cancellation_reason,
-            }
-            for task in state.tasks
-        ],
+        "tasks": [task.model_dump(mode="json") for task in state.tasks],
     }
 
     # 状态是用户侧参考数据，不提升为系统指令。

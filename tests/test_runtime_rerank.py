@@ -104,13 +104,14 @@ def test_disabled_rerank_does_not_call_service(runtime_rag, monkeypatch):
 
 
 def test_dense_chat_rerank_preserves_vector_scores_without_rerank_scores(runtime_rag, monkeypatch):
-    settings = replace(rag_module.get_settings(), rag_rerank_backend="chat")
+    settings = replace(rag_module.get_settings(), rag_rerank_backend="chat",
+                       rag_rerank_chat_model="deepseek-v4.1-flash-1017")
     monkeypatch.setattr(rag_module, "get_settings", lambda: settings)
     monkeypatch.delenv("NORMAL_DASHSCOPE_URL", raising=False)
 
     def chat_order(query, docs, **options):
         assert options["backend"] == "chat"
-        assert options["model"] == "deepseek-v4.1-flash"
+        assert options["model"] == "deepseek-v4.1-flash-1017"
         return SimpleNamespace(documents=[Document(page_content=d.page_content,
             metadata={**d.metadata, "rerank_rank": i, "rerank_backend": "chat"})
             for i, d in enumerate(reversed(docs), 1)], total_tokens=20)

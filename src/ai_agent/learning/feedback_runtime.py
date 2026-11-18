@@ -47,6 +47,37 @@ PendingLearningAction = (
     PendingFeedback | PendingTaskCreation | PendingTaskCancellation
 )
 
+def render_learning_action_delivery(
+    pending: PendingLearningAction | None,
+    *,
+    attempted: bool,
+) -> str | None:
+    """按真实候选交付操作状态；不确认、不更新状态、不保存文件。"""
+    if isinstance(pending, PendingFeedback):
+        action = "反馈记录"
+    elif isinstance(pending, PendingTaskCreation):
+        action = "任务创建"
+    elif isinstance(pending, PendingTaskCancellation):
+        action = "任务取消"
+    elif pending is None:
+        if not attempted:
+            return None
+        return (
+            "本轮没有成功生成待确认的学习操作，"
+            "没有通过本轮操作修改正式反馈或任务。"
+            "如仍需记录，请检查所选对象和操作参数后重试。"
+        )
+    else:
+        # 新增操作类型必须显式接线，不能默认为其他操作。
+        raise TypeError("尚未接入交付逻辑的学习操作类型")
+
+    return (
+        f"已生成待确认的{action}提议，尚未生效。"
+        "请核对随后由程序展示的内容；"
+        "确认后的处理结果和磁盘保存结果，以程序提示为准。"
+    )
+
+
 def sanitize_learning_action_reply(response_text: str) -> str:
     """模型正文不得包含程序回执标记；只过滤文本，不执行或取消学习操作。"""
     reserved_markers = (
@@ -504,6 +535,20 @@ def commit_feedback_proposal(
             record.model_dump(),
         ],
     })
+
+
+def commit_user_task_feedback(state: LearningState, feedback: UserFeedback) -> LearningState:
+    """Commit explicitly submitted user feedback through the shared domain validation."""
+    pending = prepare_feedback_proposal(
+        state,
+        FeedbackProposalArgs(
+            scope="task", task_id=feedback.task_id,
+            activity_status=feedback.activity_status,
+            understanding_status=feedback.understanding_status,
+        ),
+        user_message=feedback.text,
+    )
+    return commit_feedback_proposal(state, pending)
 
 
 def review_feedback_proposal(

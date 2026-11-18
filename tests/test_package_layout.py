@@ -34,7 +34,7 @@ def test_public_entrypoints_and_configuration_anchor_stay_put():
     assert PROJECT_ROOT == package.parents[1]
     assert (PROJECT_ROOT / "pyproject.toml").is_file()
     assert {path.name for path in package.glob("*.py")} == {
-        "__init__.py", "main.py", "config.py", "checkpoint_inspect.py", "state_catalog.py",
+        "__init__.py", "main.py", "config.py", "checkpoint_inspect.py", "state_catalog.py", "web_workspace.py",
     }
-    for name in ("main", "config", "checkpoint_inspect", "state_catalog"):
+    for name in ("main", "config", "checkpoint_inspect", "state_catalog", "web_workspace"):
         assert Path(importlib.import_module(f"ai_agent.{name}").__file__).parent == package

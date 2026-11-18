@@ -4,6 +4,16 @@
 工具预算、计划修改权限等场景规则仍由各自入口负责。
 """
 
+
+def budget_notice(remaining_calls: int, remaining_rounds: int | None = None) -> str:
+    """只在接近执行边界时告知当前余额；真实限制仍由调用方保证。"""
+    notes = []
+    if remaining_calls <= 2:
+        notes.append(f"工具合计还可执行{max(0, remaining_calls)}次。")
+    if remaining_rounds is not None and remaining_rounds <= 1:
+        notes.append("这是最后一次模型决策，请根据已有证据完成回答或说明缺口。")
+    return "\n[当前运行状态，非资料证据]" + "".join(notes) if notes else ""
+
 PDF_CITATION_RULES = (
     "引用PDF按页读取结果时，逐字复制该页返回的citation。"
     "不改字段名、不加前缀、不补造chunk；未成功取得页面时不生成该页引用。"
@@ -14,7 +24,7 @@ MATERIAL_ACCESS_RULES = (
     "已知准确相对路径和读取范围时直接读取；不要仅为确认文件是否存在而先列目录。"
     "用户明确要求实际调用已绑定工具且参数符合限制时，应实际执行，不能用历史回答代替。"
     "路径或范围不明确时，可以先发现、检索或向用户澄清；不得绕过工具的安全限制。"
-    "失败时如实说明，未经授权不改读其他文件。\n"
+    "失败时如实说明；可在用户授权的资料范围内继续查找，遵守用户明确限定的文件范围。\n"
 )
 
 # 同一证据边界供分析和规划复用，避免各阶段自行扩写引用规则。

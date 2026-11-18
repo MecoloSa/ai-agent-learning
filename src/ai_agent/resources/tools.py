@@ -12,10 +12,11 @@ import re
 import logging
 import json
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 from langchain_core.tools import tool, BaseTool
 from ai_agent.retrieval.rag import LearningRAG, needs_rag
 from ai_agent.resources.materials import (
+    MaterialLineRangeError,
     iter_material_files,
     safe_material_path,
     read_material_lines,
@@ -126,6 +127,7 @@ def build_retrieve_learning_context_tool(
     max_context_chars: int | None = None,
     evidence_blocks: list[str] | None = None,
     acquisition_facts: list[dict] | None = None,
+    structured_result: bool = False,
 ) -> BaseTool:
     """创建一个绑定资料目录的多query语义检索工具。
 
@@ -360,13 +362,23 @@ def build_retrieve_learning_context_tool(
         if not result:
             result = "没有检索到可返回的资料证据。"
 
-        # 正常返回证据的同时，明确告诉模型是否有query被截断。
-        # 如果没有发生截断，limit_notice为空，不会增加多余文本。
-        return "\n\n".join(
+        display_text = "\n\n".join(
             part
             for part in (limit_notice, result)
             if part
         )
+        if not structured_result:
+            # 默认保持首次分析/规划的原有文本交接契约。
+            return display_text
+        data = {
+            "text": display_text,
+            "sources": formatting_trace.get("selected_sources", []),
+        }
+        # 正常路径不重复报告零值；内部格式化统计仍保留完整计数。
+        omitted_blocks = formatting_trace.get("omitted_blocks", 0)
+        if omitted_blocks > 0:
+            data["omitted_blocks"] = omitted_blocks
+        return json.dumps({"ok": True, "data": data}, ensure_ascii=False)
 
     return retrieve_learning_context
 
@@ -426,13 +438,23 @@ def build_agent_tools(
         if not files:
             return "没有找到可分析的资料文件。"
 
-        return "\n".join(
+        result = "\n".join(
             f"{path.relative_to(root).as_posix()} "
             f"({checked_path.stat().st_size} bytes)"
             for path, checked_path in (
                 files[:current_settings.tool_file_list_limit]
             )
         )
+        returned_count = min(len(files), current_settings.tool_file_list_limit)
+        if returned_count < len(files):
+            # 说明展示边界，不把清单上限误报成目录的完整范围。
+            result += f"\n[清单未完整返回：仅返回{returned_count}/{len(files)}个文件。]"
+            if acquisition_facts is not None:
+                acquisition_facts.append({
+                    "tool": "list_learning_files", "status": "truncated",
+                    "returned_files": returned_count, "total_files": len(files),
+                })
+        return result
 
     @tool("read_learning_file", args_schema=ReadArgs)
     def bound_read_file(
@@ -491,7 +513,15 @@ def build_agent_tools(
                         len(results)
                         >= current_settings.tool_search_result_limit
                     ):
-                        return "\n".join(results)
+                        # 已达到上限并提前停止，不能断言没有其他命中。
+                        if acquisition_facts is not None:
+                            acquisition_facts.append({
+                                "tool": "search_learning_files", "status": "limit_reached",
+                                "returned_hits": len(results),
+                                "limit": current_settings.tool_search_result_limit,
+                            })
+                        return ("\n".join(results)
+                                + "\n[搜索达到返回上限，未确认是否还有其他命中。]")
 
         return "\n".join(results) or f"未找到关键词：{keyword}"
 
@@ -530,6 +560,7 @@ def build_read_material_lines_tool(
         relative_path: str,
         start_line: StrictInt,
         end_line: StrictInt,
+        recover_short_file: StrictBool = False,
     ) -> str:
         """读取已知 TXT/MD/PY 文件的指定行，不执行代码。
 
@@ -538,15 +569,22 @@ def build_read_material_lines_tool(
         需要已知文件的准确正文时使用；不支持PDF，不负责搜索未知文件。
         返回JSON，包含实际行号、正文及截断标记。
         truncated=true或partial=true时，不能把返回内容当作完整原文。
+        允许范围外补读时可设 recover_short_file=true；起始行越界且短文件可完整返回时，回执标明补读范围。
         """
         # StrictInt 在工具参数校验阶段拒绝字符串、浮点数和布尔值。
         # 底层函数继续校验目录边界、文件类型、范围和输出大小。
-        data = read_material_lines(
-            resolved_root,
-            relative_path,
-            start_line,
-            end_line,
-        )
+        try:
+            options = {"recover_short_file": True} if recover_short_file else {}
+            data = read_material_lines(resolved_root, relative_path, start_line, end_line, **options)
+        except MaterialLineRangeError as exc:
+            return json.dumps({"ok": False, "error": {
+                "code": exc.code, "message": str(exc), "retryable": False, **exc.details,
+            }}, ensure_ascii=False)
+        except FileNotFoundError:
+            return json.dumps({"ok": False, "error": {
+                "code": "material_not_found", "message": "当前资料目录中找不到指定文件。",
+                "retryable": False,
+            }}, ensure_ascii=False)
 
         # 引用位置由程序按实际返回范围生成，不让模型猜测行号。
         data["citation"] = (
@@ -680,7 +718,8 @@ def build_read_pdf_pages_tool(root_dir: str) -> BaseTool:
         页码从1开始，包含两端，每次最多3页、返回正文最多8000字符。
         物理页序号可能不同于书中印刷页码。
 
-        返回JSON，包含实际页码、逐页文字、截断情况与页级引用。
+        返回JSON，包含实际页码、PDF页标签、逐页文字、截断情况与页级引用。
+        pdf_page_label 是 PDF 元数据中的显示标签，核对印刷页码时请查看原文。
         text_status=no_text表示没有提取到非空文字，不等于页面空白。
         partial或truncated为true时，不得声称返回了完整文字。
         不支持OCR、加密PDF，不保证图片、表格和公式信息完整。

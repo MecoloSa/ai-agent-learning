@@ -15,9 +15,15 @@ from anyio.from_thread import start_blocking_portal
 from langchain_core.tools import StructuredTool
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from pydantic import BaseModel, StrictInt
 
 from ai_agent.resources.materials import resolve_material_root
-from ai_agent.resources.tools import build_read_material_lines_tool
+
+
+class McpLineReadInput(BaseModel):
+    relative_path: str
+    start_line: StrictInt
+    end_line: StrictInt
 
 
 @asynccontextmanager
@@ -59,7 +65,6 @@ async def _reader_session(material_dir: str):
 def open_mcp_reader(material_dir: str):
     """with期间提供可invoke的工具；退出后不允许继续调用。"""
     root = str(resolve_material_root(material_dir))
-    local = build_read_material_lines_tool(root)
 
     # Portal维护异步事件循环，让同步.invoke复用同一连接。
     # 不在每次调用时重新启动服务，也不迁移整个聊天为异步。
@@ -113,9 +118,9 @@ def open_mcp_reader(material_dir: str):
 
             adapter = StructuredTool.from_function(
                 func=invoke,
-                name=local.name,
-                description=local.description,
-                args_schema=local.args_schema,
+                name="read_material_lines",
+                description="读取已关联资料目录内 TXT/MD/PY 的指定行。相对路径；行号从1开始，包含两端，每次最多200行。",
+                args_schema=McpLineReadInput,
             )
 
             try:

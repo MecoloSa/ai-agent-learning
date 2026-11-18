@@ -48,8 +48,8 @@ def test_prompt_selects_evidence_policy(
 
     assert (raw_material in prompt) is expected_raw
     assert "分析标记" in prompt
-    assert "计划标记" in prompt
-    assert "目标标记" in prompt
+    assert "计划标记" not in prompt
+    assert "目标标记" not in prompt
 
     expected_mode = "preloaded" if expected_raw else "on_demand"
     assert f"策略={expected_mode}" in prompt
@@ -148,7 +148,9 @@ def test_plan_update_keeps_on_demand_policy(monkeypatch, tmp_path):
         assert request["tool_llm"] is not None
 
     second_prompt = str(requests[1]["request_messages"][0].content)
-    assert "当前学习计划：\n新计划" in second_prompt
+    from tests.helpers.request_state import current_state
+    assert current_state(requests[1]["request_messages"])["plan_markdown"] == "新计划"
+    assert "当前学习计划：" not in second_prompt
 
 @pytest.mark.parametrize(
     "filenames, expected",

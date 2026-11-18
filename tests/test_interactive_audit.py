@@ -109,7 +109,9 @@ def test_audit_does_not_change_execution(
     if scenario == "failed":
         assert "不能确认" in result
     else:
-        assert result == "已读取测试正文。[source=book.pdf, page=5]"
+        body, footer = result.split("\n\n【程序整理的本轮读取来源】\n")
+        assert body == "已读取测试正文。[source=book.pdf, page=5]"
+        assert "- [source=book.pdf, page=5]" in footer
 
     if not audit_enabled:
         return

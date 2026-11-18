@@ -88,7 +88,11 @@ def test_failed_then_successful_read_reaches_planner_separately(tmp_path, monkey
 
     monkeypatch.setattr(agents, "_invoke_llm", invoke)
     agents.create_study_plan(analysis, context, "理解叙述视角", 1, material_dir=str(tmp_path), mode="agent", plan_evidence_trace=trace)
-    assert trace["initial_evidence"] == evidence
+    assert json.loads(evidence)["data"]["text"] == "叙述视角决定信息范围。"
+    assert trace["initial_evidence"] == (
+        "[source=notes.md]\n读取范围：文件开头；截断=False\n叙述视角决定信息范围。"
+    )
+    assert trace["initial_context_chars"] == len(evidence)
     assert trace["initial_acquisition_facts"] == facts
     user_message = requests[1].content
     assert "初始资料获取范围与限制（程序记录，非原文证据）" in user_message

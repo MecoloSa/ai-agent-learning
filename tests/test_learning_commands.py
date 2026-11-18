@@ -35,6 +35,10 @@ def test_register_then_record_feedback():
     assert updated.tasks[0].activity_status == "completed"
     assert updated.tasks[0].understanding_status == "self_reported_unclear"
     assert state.tasks[0].activity_status == "not_started"
+    assert len(updated.feedback_records) == 1
+    assert updated.feedback_records[0].quote == "读完但没理解"
+    assert updated.feedback_records[0].task_id == "task-001"
+    assert state.feedback_records == ()
 
 
 @pytest.mark.parametrize("command", [

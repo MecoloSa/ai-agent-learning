@@ -37,8 +37,18 @@ def test_missing_file_then_success_keeps_error_only_in_analysis_messages(
     assert "叙述视角" in analysis
     assert len(observations) == 2
     assert observations[0].tool_call_id == "missing"
-    assert "工具执行出错" in observations[0].content
-    assert json.loads(observations[1].content)["ok"] is True
+    error = json.loads(observations[0].content)
+    assert error["ok"] is False
+    assert error["error"]["code"] == "FileNotFoundError"
+    assert error["error"]["retryable"] is False
+    assert observations[1].tool_call_id == "success"
+    assert observations[1].content == (
+        "[source=notes.md]\n读取范围：文件开头；截断=False\n"
+        "叙述视角决定读者能接触的信息。"
+    )
+    # 成功结果只在请求副本中整理；下游证据仍是原始成功回执。
+    assert json.loads(evidence)["ok"] is True
+    assert json.loads(evidence)["data"]["text"] == "叙述视角决定读者能接触的信息。"
     assert "missing.md" not in evidence
     assert "工具执行出错" not in evidence
     assert "notes.md" in evidence

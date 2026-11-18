@@ -15,7 +15,7 @@ from ai_agent.learning.learning_context import build_learning_state_message
 from ai_agent.learning.learning_state import LearningState, LearningTask, UserFeedback
 
 
-def test_state_message_contains_tasks_without_full_plan():
+def test_state_message_contains_current_plan_and_tasks_without_initial_plan():
     state = LearningState(
         learning_goal="理解ReAct",
         plan_markdown="一份完整计划",
@@ -36,8 +36,9 @@ def test_state_message_contains_tasks_without_full_plan():
     assert data["tasks"][0]["latest_feedback"] == "不理解如何结束。"
     assert data["tasks"][0]["feedback_source"] == "user_report"
 
-    # 任务状态之外，不重复附带初始或当前的完整计划。
-    assert "plan_markdown" not in data
+    assert data["plan_markdown"] == state.plan_markdown
+    assert data["learning_goal"] == state.learning_goal
+    assert data["plan_status"] == "active"
     assert "initial_plan_markdown" not in data
 
 

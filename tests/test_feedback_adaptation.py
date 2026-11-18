@@ -86,7 +86,8 @@ def test_candidate_confirmation_keeps_feedback_and_effective_context(
     assert saved.initial_plan_markdown == state.plan_markdown
     assert FIXTURE.read_bytes() == source_bytes
     assert len(requests) == 2
-    assert saved.plan_markdown in requests[1][0].content
+    from tests.helpers.request_state import current_state
+    assert current_state(requests[1])["plan_markdown"] == saved.plan_markdown
 
     data = [
         json.loads(message.content)

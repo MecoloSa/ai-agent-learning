@@ -185,8 +185,10 @@ def test_chat_update_register_save_and_restore(monkeypatch, tmp_path):
 
     # 第二次普通问答必须已经使用新目标、新计划，而不只是文件保存正确。
     prompt = str(requests[1][0].content)
-    assert "当前学习目标：新目标" in prompt
-    assert "当前学习计划：\n新计划" in prompt
+    from tests.helpers.request_state import current_state
+    assert current_state(requests[1])["learning_goal"] == "新目标"
+    assert current_state(requests[1])["plan_markdown"] == "新计划"
+    assert "当前学习计划：" not in prompt
 
 def show_state_change(stage, before, after):
     """打印实际对象的字段变化，不参与业务更新或测试判定。"""

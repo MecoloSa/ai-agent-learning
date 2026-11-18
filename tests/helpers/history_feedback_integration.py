@@ -160,7 +160,7 @@ def run_case(folder, decision, *, resume=True):
             views = [json.loads(m["content"]) for m in requests[0]["request_messages"]
                      if m["type"] == "human" and isinstance(m["content"], str)
                      and m["content"].startswith('{"context_type": "current_learning_state"')]
-            result["checks"]["resume_input_matches"] = len(requests) == 1 and saved.plan_markdown in requests[0]["request_messages"][0]["content"] and len(views) == 1 and views[0]["tasks"] == [t.model_dump(mode="json") for t in saved.tasks] and views[0]["context_revision"] == saved.context_revision
+            result["checks"]["resume_input_matches"] = len(requests) == 1 and len(views) == 1 and views[0]["plan_markdown"] == saved.plan_markdown and views[0]["learning_goal"] == saved.learning_goal and views[0]["tasks"] == [t.model_dump(mode="json") for t in saved.tasks] and views[0]["context_revision"] == saved.context_revision
             result["checks"]["resume_confirmation_context_present"] = any(m["type"] == "ai" and ("confirmed" if adopted else "cancelled") in m["content"] for m in requests[0]["request_messages"])
         result["status"] = "completed"
     except Exception as exc:

@@ -57,7 +57,11 @@ def test_corrected_request_uses_existing_loop_budget(monkeypatch):
         nonlocal calls
         calls += 1
         if calls == 2:
-            observation = json.loads(messages[-1].content)
+            # 临近耗尽提示可位于请求末尾；校验仍绑定实际工具回执。
+            observation = json.loads(next(
+                message.content for message in reversed(messages)
+                if message.type == "tool" and message.tool_call_id == "call-1"
+            ))
             assert observation["error"]["issues"] == [{"loc": ["count"], "type": "int_type"}]
         if calls <= 2:
             return AIMessage(content="", tool_calls=[{

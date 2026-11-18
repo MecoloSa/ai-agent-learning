@@ -77,6 +77,14 @@ def read_material_excerpt(
 # 先使用明确、容易验证的输出边界；不是模型上下文窗口的总预算。
 MAX_READ_LINES = 200
 MAX_READ_TEXT_CHARS = 8_000
+MAX_SHORT_READ_RECOVERY_LINES = 40
+
+
+class MaterialLineRangeError(ValueError):
+    def __init__(self, code: str, message: str, **details: int):
+        super().__init__(message)
+        self.code = code
+        self.details = details
 
 
 def read_material_lines(
@@ -84,6 +92,8 @@ def read_material_lines(
     relative_path: str,
     start_line: int,
     end_line: int,
+    *,
+    recover_short_file: bool = False,
 ) -> dict[str, object]:
     """读取 TXT/MD/PY 的指定行范围，行号从 1 开始且包含两端。
 
@@ -98,10 +108,11 @@ def read_material_lines(
         raise ValueError("起止行必须是整数")
 
     if start_line < 1 or end_line < start_line:
-        raise ValueError("行范围必须满足 1 <= start_line <= end_line")
+        raise MaterialLineRangeError("invalid_line_range", "行范围必须满足 1 <= start_line <= end_line")
 
     if end_line - start_line + 1 > MAX_READ_LINES:
-        raise ValueError(f"单次最多读取 {MAX_READ_LINES} 行")
+        raise MaterialLineRangeError("line_window_too_large", f"单次最多读取 {MAX_READ_LINES} 行",
+                                     max_lines=MAX_READ_LINES)
 
     if Path(relative_path).is_absolute():
         raise ValueError("请使用资料目录内的相对路径")
@@ -118,12 +129,25 @@ def read_material_lines(
     rows: list[dict[str, object]] = []
     used_chars = 0
     truncated = False
+    line_number = 0
+    prefix: list[dict[str, object]] = []
+    prefix_chars = 0
+    keep_prefix = recover_short_file and start_line > 1
 
     # utf-8-sig 兼容普通 UTF-8 和带 BOM 的文件。
     # 不使用 errors="replace"，避免把损坏编码伪装成准确原文。
     with path.open("r", encoding="utf-8-sig") as stream:
         for line_number, line in enumerate(stream, start=1):
             if line_number < start_line:
+                if keep_prefix:
+                    # 越界时复用同一次扫描。超过任一预算就丢弃备选正文。
+                    text = line.rstrip("\r\n")
+                    prefix_chars += len(text)
+                    if line_number > MAX_SHORT_READ_RECOVERY_LINES or prefix_chars > MAX_READ_TEXT_CHARS:
+                        prefix.clear()
+                        keep_prefix = False
+                    else:
+                        prefix.append({"line": line_number, "text": text, "partial": False})
                 continue
             if line_number > end_line:
                 break
@@ -147,8 +171,13 @@ def read_material_lines(
                 truncated = True
                 break
 
+    recovered = not rows and bool(prefix) and any(row["text"].strip() for row in prefix)
+    if recovered:
+        rows = prefix
     if not rows:
-        raise ValueError("起始行超出文件范围，没有返回正文")
+        # 到达文末才会没有任何返回行，复用本次扫描得到的行数。
+        raise MaterialLineRangeError("line_out_of_range", "起始行超出文件范围，没有返回正文",
+                                     total_lines=line_number)
 
     source = path.relative_to(
         Path(root_dir).expanduser().resolve()
@@ -166,4 +195,5 @@ def read_material_lines(
         "returned_end_line": rows[-1]["line"],
         "truncated": truncated,
         "lines": rows,
+        **({"range_recovery": {"reason": "start_line_out_of_range", "total_lines": line_number}} if recovered else {}),
     }

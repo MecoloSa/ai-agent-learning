@@ -164,8 +164,10 @@ def test_chat_confirmation_controls_state_memory_and_save(
     assert len(requests) == 2
 
     second_prompt = str(requests[1][0].content)
-    assert f"当前学习目标：{expected_goal}" in second_prompt
-    assert f"当前学习计划：\n{expected_plan}" in second_prompt
+    from tests.helpers.request_state import current_state
+    assert current_state(requests[1])["learning_goal"] == expected_goal
+    assert current_state(requests[1])["plan_markdown"] == expected_plan
+    assert "当前学习计划：" not in second_prompt
 
     history = [
         str(message.content)
@@ -194,4 +196,4 @@ def test_chat_confirmation_controls_state_memory_and_save(
         # 首次AI记录就必须包含最终处理结果，且system已同步。
         prompt, text = compression_observations[0]
         assert f"程序处理结果：{status}" in text
-        assert f"当前学习目标：{expected_goal}" in prompt
+        assert "当前学习目标：" not in prompt

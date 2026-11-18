@@ -18,9 +18,9 @@ from ai_agent.learning.learning_state import (
     LearningState,
     LearningTask,
     UserFeedback,
-    apply_user_feedback,
     register_learning_task,
 )
+from ai_agent.learning.feedback_runtime import commit_user_task_feedback
 
 def new_current_state_path() -> Path:
     """为一次运行分配独立当前存档路径，不立即创建文件。
@@ -122,7 +122,9 @@ def handle_learning_command(
             return updated, f"已登记任务：{task.task_id} / {task.title}"
 
         feedback = UserFeedback.model_validate(data)
-        updated = apply_user_feedback(state, feedback)
+        # /feedback是用户明确的写入命令，不再额外索取确认；
+        # 复用自然语言确认后的提交契约，原子更新任务及正式反馈历史。
+        updated = commit_user_task_feedback(state, feedback)
 
         # next() 找到指定任务后立即返回；更新函数已保证该任务存在。
         task = next(

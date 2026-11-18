@@ -98,7 +98,7 @@ def test_false_claim_gets_one_correction_then_real_tool_call(monkeypatch):
     assert inbox.pending is not None
     assert len(trace["model_responses"]) == 3
     assert len(trace["tool_results"]) == 1
-    assert "等待程序确认" in answer
+    assert "待确认" in answer and "尚未生效" in answer
 
 
 def test_repeated_false_claim_stops_after_one_correction(monkeypatch):

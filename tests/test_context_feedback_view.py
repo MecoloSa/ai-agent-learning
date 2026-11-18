@@ -145,7 +145,8 @@ def test_restored_session_gets_plan_and_previous_confirmed_feedback(monkeypatch,
     destination = tmp_path / "branch.json"
     main.run_interactive_session("", restored.plan_markdown, "", restored.learning_goal, strategy,
                                  str(tmp_path), initial_state=restored, current_state_path=destination)
-    assert revised.plan_markdown in prompts[0][0].content
+    from tests.helpers.request_state import current_state
+    assert current_state(prompts[0])["plan_markdown"] == revised.plan_markdown
     assert "不能因此声称计划缺失或拒绝复述" in prompts[0][0].content
     assert "不能用登记任务表代替当前计划概括" in prompts[0][0].content
     assert "current_context记录默认只在当天、当前计划版本内主动使用" not in prompts[0][0].content

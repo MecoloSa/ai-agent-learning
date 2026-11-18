@@ -82,7 +82,8 @@ def test_plan_and_records_survive_independent_cli_processes(tmp_path, decision):
     assert len(requests) == 1
     assert requests[0]["user_input"] == RESUME_PROMPT
     messages = requests[0]["request_messages"]
-    assert first.plan_markdown in messages[0]["content"]
+    from tests.helpers.request_state import current_state
+    assert current_state(messages)["plan_markdown"] == first.plan_markdown
     views = [json.loads(m["content"]) for m in messages
              if m["type"] == "human" and isinstance(m["content"], str)
              and m["content"].startswith('{"context_type": "current_learning_state"')]

@@ -1,6 +1,6 @@
 [project]
 name = "ai-agent"
-version = "0.1.0"
+version = "1.0.0"
 description = "Local learning-material analysis and study-plan agent"
 readme = "src/ai_agent/README.md"
 requires-python = ">=3.14"
@@ -31,6 +31,7 @@ dependencies = [
 
 [project.scripts]
 learning-agent = "ai_agent.main:main"
+learning-workspace = "ai_agent.web_workspace:main"
 
 [build-system]
 requires = ["uv_build>=0.12.2,<0.13.0"]

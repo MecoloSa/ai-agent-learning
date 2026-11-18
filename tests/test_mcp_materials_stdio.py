@@ -53,6 +53,7 @@ def test_mcp_stdio_read_and_boundaries(tmp_path):
                     ("越界", {**arguments, "relative_path": "../outside.md"}),
                     ("非法行号", {**arguments, "start_line": "1"}),
                     ("不存在文件", {**arguments, "relative_path": "missing.md"}),
+                    ("行号超出文末", {**arguments, "start_line": 8, "end_line": 9}),
                 ]:
                     failed = await session.call_tool("read_material_lines", bad)
                     assert failed.isError is True

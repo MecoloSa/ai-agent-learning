@@ -1,0 +1,22 @@
+[
+  {
+    "case_id": "truncated_readback",
+    "user_input": "蓝签是否代表理解达标？橙签的通过条件是什么？请依据当前已经读取的内容回答，缺少依据的部分明确说明。",
+    "materials": {"markers.md": "蓝签表示已阅读定义，不代表理解达标。\n橙签的通过规则见下文。\n橙签要求判断三个陌生例子，至少两个正确，并说明依据。\n"},
+    "seed_calls": [{"name": "read_learning_file", "args": {"relative_path": "markers.md", "max_chars": 18}}],
+    "expected": "补读取得后文后可回答橙签为3例至少2例正确并说明依据；未取得则说明不足。蓝签不代表理解达标，引用实际取得的来源，不编造。"
+  },
+  {
+    "case_id": "multiple_sources",
+    "user_input": "请比较 alpha.py 与 beta.py 中 required_count、total_count 的值和返回顺序，每一项结论标明对应文件及行号，不修改文件。",
+    "materials": {
+      "alpha.py": "def rule():\n    required_count = 2\n    total_count = 3\n    return required_count, total_count\n",
+      "beta.py": "def rule():\n    required_count = 5\n    total_count = 8\n    return required_count, total_count\n"
+    },
+    "seed_calls": [
+      {"name": "read_material_lines", "args": {"relative_path": "alpha.py", "start_line": 1, "end_line": 200}},
+      {"name": "read_material_lines", "args": {"relative_path": "beta.py", "start_line": 1, "end_line": 200}}
+    ],
+    "expected": "alpha为2、3，beta为5、8；两者都先required_count再total_count；结论能对应到文件和实际行号，不将请求200行当成取得范围。"
+  }
+]

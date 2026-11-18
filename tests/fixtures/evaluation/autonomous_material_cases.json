@@ -1,0 +1,24 @@
+[
+  {
+    "case_id": "autonomous_cross_file",
+    "user_input": "请依据这组资料解释“完成标记”和“掌握标记”的区别，并说明获得掌握标记需要什么条件，给出资料来源。",
+    "materials": {
+      "overview.md": "两种学习标记的含义见 concepts.md，掌握判定见 checks.md。\n",
+      "concepts.md": "完成标记表示已经提交学习记录，不代表掌握。\n掌握标记表示通过独立检验。\n",
+      "checks.md": "独立检验要求判断四个新例子，至少三个正确，并说明依据。\n"
+    },
+    "seed_calls": [],
+    "expected": "自主取得概念与检验条件；完成不等于掌握，四例至少三例正确并说明依据；引用来源，不强制工具顺序。"
+  },
+  {
+    "case_id": "autonomous_missing_rule",
+    "user_input": "这组资料是否规定了第三种标记的晋级条件？如果没有，请明确说明，不自行补充规则。",
+    "materials": {
+      "overview.md": "两种学习标记的含义见 concepts.md，掌握判定见 checks.md。\n",
+      "concepts.md": "完成标记表示已经提交学习记录，不代表掌握。\n掌握标记表示通过独立检验。\n",
+      "checks.md": "独立检验要求判断四个新例子，至少三个正确，并说明依据。\n"
+    },
+    "seed_calls": [],
+    "expected": "检查相关资料后说明未规定第三种标记晋级，不编造；区分已核查与尚未覆盖。"
+  }
+]

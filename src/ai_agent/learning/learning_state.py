@@ -32,6 +32,7 @@ UnderstandingStatus = Literal[
     "unknown",
     "self_reported_clear",
     "self_reported_unclear",
+    "self_reported_partial",
 ]
 
 
@@ -64,6 +65,9 @@ class MaterialBinding(StateModel):
 class LearningTask(StateModel):
     task_id: str = Field(min_length=1)
     title: str = Field(min_length=1)
+    from_plan: bool = False
+    estimated_minutes: int | None = Field(default=None, ge=1, le=1440, strict=True)
+    instructions: str = Field(default="", max_length=4000)
     activity_status: ActivityStatus = "not_started"
     understanding_status: UnderstandingStatus = "unknown"
     latest_feedback: str = ""

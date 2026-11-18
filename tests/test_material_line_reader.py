@@ -4,10 +4,13 @@
 不调用模型，不解析 PDF，不执行 Python 资料。
 """
 
+import json
+
 import pytest
 
 import ai_agent.resources.materials as materials_module
 from ai_agent.resources.materials import read_material_lines
+from ai_agent.resources.tools import build_read_material_lines_tool
 
 
 @pytest.mark.parametrize("suffix", [".txt", ".md", ".py"])
@@ -66,6 +69,59 @@ def test_start_beyond_file_is_rejected(tmp_path):
 
     with pytest.raises(ValueError, match="起始行超出"):
         read_material_lines(str(tmp_path), "notes.md", 5, 6)
+
+
+@pytest.mark.parametrize(("name", "start", "end", "code", "details"), [
+    ("notes.md", 35, 40, "line_out_of_range", {"total_lines": 2}),
+    ("empty.md", 1, 2, "line_out_of_range", {"total_lines": 0}),
+    ("notes.md", 0, 2, "invalid_line_range", {}),
+    ("notes.md", 1, 201, "line_window_too_large", {"max_lines": 200}),
+    ("missing.md", 1, 2, "material_not_found", {}),
+])
+def test_bound_tool_returns_actionable_failures(tmp_path, name, start, end, code, details):
+    (tmp_path / "notes.md").write_text("第一行\n第二行", encoding="utf8")
+    (tmp_path / "empty.md").touch()
+    reader = build_read_material_lines_tool(str(tmp_path))
+    result = json.loads(reader.invoke({"relative_path": name, "start_line": start, "end_line": end}))
+    assert result["ok"] is False and "data" not in result
+    assert result["error"] == {"code": code, "message": result["error"]["message"], "retryable": False, **details}
+    assert result["error"]["message"]
+    corrected = json.loads(reader.invoke({"relative_path": "notes.md", "start_line": 2, "end_line": 2}))
+    assert corrected["ok"] is True and corrected["data"]["citation"] == "[source=notes.md, lines=2-2]"
+
+
+@pytest.mark.parametrize(("lines", "chars", "allowed", "success"), [
+    (40, 200, True, True),
+    (41, 1, True, False),
+    (40, 201, True, False),
+    (40, 1, False, False),
+    (0, 0, True, False),
+    (704, 1, True, False),
+])
+def test_short_file_boundary_in_production_tool(tmp_path, lines, chars, allowed, success):
+    (tmp_path / "notes.md").write_text(("文" * chars + "\n") * lines, encoding="utf8")
+    reader = build_read_material_lines_tool(str(tmp_path))
+    args = {"relative_path": "notes.md", "start_line": lines + 1, "end_line": lines + 5,
+            "recover_short_file": allowed}
+    result = json.loads(reader.invoke(args))
+    assert result["ok"] is success
+    if success:
+        data = result["data"]
+        assert data["requested_start_line"] == lines + 1 and data["returned_start_line"] == 1
+        assert data["returned_end_line"] == lines and not data["truncated"]
+        assert data["citation"] == f"[source=notes.md, lines=1-{lines}]"
+        assert data["range_recovery"]["total_lines"] == lines
+    else:
+        assert result["error"]["total_lines"] == lines
+
+
+def test_valid_long_file_window_does_not_expand(tmp_path):
+    (tmp_path / "notes.md").write_text("正文\n" * 704, encoding="utf8")
+    reader = build_read_material_lines_tool(str(tmp_path))
+    data = json.loads(reader.invoke({"relative_path": "notes.md", "start_line": 600,
+                                    "end_line": 602, "recover_short_file": True}))["data"]
+    assert [row["line"] for row in data["lines"]] == [600, 601, 602]
+    assert "range_recovery" not in data
 
 
 def test_path_outside_material_root_is_rejected(tmp_path):

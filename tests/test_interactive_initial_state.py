@@ -125,8 +125,10 @@ def test_initial_state_is_used_without_reset(
     )
 
     assert result == (expected_plan, expected_goal)
-    assert f"当前学习目标：{expected_goal}" in prompt
-    assert f"当前学习计划：\n{expected_plan}" in prompt
+    assert data["learning_goal"] == expected_goal
+    assert data["plan_markdown"] == expected_plan
+    assert "当前学习目标：" not in prompt
+    assert "当前学习计划：" not in prompt
     assert data["context_revision"] == (4 if restoring else 1)
     assert data["tasks_need_review"] is restoring
     assert data["tasks"] == (

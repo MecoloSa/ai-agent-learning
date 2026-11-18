@@ -11,7 +11,8 @@ def test_interactive_entry_receives_time_policy_without_model_call(monkeypatch):
     prompt = app._build_interactive_system_prompt("分析", "旧计划", "", "学习目标",
         retrieval_available=False, on_demand_eligible=False)
     assert prompt.count(probe) == 1
-    assert "旧计划" in prompt and "学习目标" in prompt
+    assert "旧计划" not in prompt
+    assert "当前学习目标：" not in prompt
 
 
 @pytest.mark.parametrize("mode", ["pipeline", "agent"])

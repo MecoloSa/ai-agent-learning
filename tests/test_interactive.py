@@ -139,7 +139,8 @@ def test_interactive_prompt_contains_shared_pdf_citation_rules(monkeypatch):
             on_demand_eligible=True,
         )
 
-        assert PDF_CITATION_RULES in prompt
+        assert PDF_CITATION_RULES not in prompt
+        assert "本轮工具返回的资料来源由程序在文末列出" in prompt
 
         # 共享的是引用约定，不应把隔离实验的场景限制带进真实交互。
         assert "你正在参加隔离的PDF资料核对实验" not in prompt

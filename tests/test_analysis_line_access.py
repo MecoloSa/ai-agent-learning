@@ -4,7 +4,7 @@ import json
 import pytest
 
 import ai_agent.resources.tools as tools
-from ai_agent.runtime.agents import ANALYSIS_TOOL_LIMITS
+from ai_agent.runtime.agents import _build_analysis_budget_status
 
 
 def long_source(tmp_path):
@@ -33,7 +33,10 @@ def test_analysis_can_search_then_read_complete_function_beyond_prefix(tmp_path,
     data = json.loads(result)["data"]
     assert "required_count = 2" in "\n".join(row["text"] for row in data["lines"])
     assert data["citation"] == f"[source=rules.py, lines={start}-{start + 3}]"
-    assert ANALYSIS_TOOL_LIMITS["read_material_lines"] == 6
+    status = _build_analysis_budget_status(
+        ["read_material_lines"], {"read_material_lines": 7}, 7, 12, 2,
+    )
+    assert status["remaining_by_tool"]["read_material_lines"] == 5
     assert "root_dir" not in bound["read_material_lines"].args
     assert "acquisition_facts" not in bound["read_material_lines"].args
 

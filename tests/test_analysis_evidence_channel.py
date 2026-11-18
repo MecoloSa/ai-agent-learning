@@ -42,7 +42,11 @@ def test_real_analysis_passes_observations_to_model_but_only_reads_downstream(
     assert "notes.md" in observed[0].content
     assert "notes.md:1:" in observed[1].content
     if read_body:
-        assert context == observed[2].content
+        # 原始证据保留JSON；模型请求只改变表示，两者不再逐字相等。
+        assert observed[2].content == (
+            f"[source=notes.md]\n读取范围：文件开头；截断=False\n{body}"
+        )
+        assert context != observed[2].content
         data = json.loads(context)["data"]
         assert data["text"] == body
         assert data["source"] == "notes.md"
@@ -65,11 +69,17 @@ def test_real_analysis_passes_observations_to_model_but_only_reads_downstream(
         analysis, context, "理解叙述视角", 1,
         material_dir=str(tmp_path), mode="agent", plan_evidence_trace=trace,
     )
-    assert trace["initial_evidence"] == context
+    expected = (
+        f"[source=notes.md]\n读取范围：文件开头；截断=False\n{body}"
+        if read_body else ""
+    )
+    assert trace["initial_evidence"] == expected
+    assert trace["initial_context_chars"] == len(context)
     assert "notes.md:1:" not in requests[1].content
     assert "--- 调用 " not in requests[1].content
     if read_body:
-        assert context in requests[1].content
+        assert json.loads(context)["data"]["text"] == body
+        assert expected in requests[1].content
 
 
 def test_collector_is_scoped_to_each_factory_and_keeps_excerpt_limits(tmp_path):

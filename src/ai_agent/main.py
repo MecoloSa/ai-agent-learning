@@ -52,12 +52,14 @@ from ai_agent.learning.learning_commands import (
 )
 from ai_agent.learning.feedback_parser import propose_user_feedback
 from ai_agent.learning.plan_proposals import PlanProposalInbox
+from ai_agent.learning.plan_change_request import collect_plan_draft, parse_plan_change_command
 from ai_agent.learning.feedback_runtime import (
     LearningActionInbox,
     review_learning_action,
     has_unbacked_learning_proposal,
     build_learning_action_history,
     sanitize_learning_action_reply,
+    render_learning_action_delivery,
 )
 from ai_agent.learning.confirmation import read_confirmation, confirmation_details
 from ai_agent.learning.learning_context import build_learning_state_message
@@ -72,8 +74,9 @@ from ai_agent.persistence.session_materials import (
     resolve_resume_materials,
 )
 from ai_agent.runtime.prompt_rules import (
-    PDF_CITATION_RULES, MATERIAL_ACCESS_RULES, LEARNING_TIME_RULES,
+    MATERIAL_ACCESS_RULES, LEARNING_TIME_RULES, budget_notice,
 )
+from ai_agent.runtime.source_delivery import TurnSourceLedger
 from ai_agent.runtime.execution_guard import (
     ExecutionRecord,
     resolve_execution_requirement,
@@ -148,16 +151,12 @@ def _build_interactive_system_prompt(
     *,
     retrieval_available: bool,
     on_demand_eligible: bool = False,
+    plan_only: bool = False,
 ) -> str:
-    """把资料分析结果、（可能已被用户要求更新过的）计划和资料上下文拼成 system_prompt。
+    """构造职责规则及现有分析、资料证据上下文。
 
-    这里的四类信息更新方式并不相同，函数内的措辞需要对应体现：
-    - plan、learning_goal：决策类信息，用户可能随时要求调整，通过下面约定的
-      两组标记由模型在回复末尾整体重写，被 main.py 抽取后经
-      memory.update_system_message 写回——本函数因此被复用于每次重建整段
-      system_prompt。
-    - analysis、material_context：证据类信息，是资料分析阶段一次性产出的，
-      不应该让对话模型去猜测式地重写；
+    正式目标和计划由build_learning_state_message按轮提供。
+    plan、learning_goal参数暂留以兼容调用方和规模日志。
     """
     settings = get_settings()
     # 检索工具可用还不够：被移出的资料类型必须有对应访问入口。
@@ -200,13 +199,32 @@ def _build_interactive_system_prompt(
             "query应包含明确主题、所需信息和证据用途，能脱离对话独立理解。"
             "聚焦问题默认只提交一个当前必要查询；仅将已知且互补的缺口合并提交。"
             "必须先看结果才能确定的下一问，收到结果后再决定。"
-            f"单次最多{settings.interactive_max_queries_per_tool_call}条query，按重要程度排序；"
+            "查询按重要程度排序；"
             "合并近义问题，不为用满预算而检索。"
-            "neighbor_window=0只取命中块，1补充相邻块。\n"
+            "证据用途应明确，避免反复获取相同正文。\n"
         )
     else:
         retrieval_rules = "当前未启用语义检索；无法定位所需内容时先澄清，不猜测位置。\n"
 
+    learning_rules = (
+        "任务进度和反馈由用户通过表单或状态命令提交。\n"
+        if plan_only else (
+            "【学习操作】\n"
+            "用户明确要求记录或更正反馈时调用propose_learning_feedback；"
+            "新增待办调用propose_task_creation；取消登记任务调用propose_task_cancellation。"
+            "普通问答、假设和仅讨论不构成写入授权；不改计划不等于禁止记录反馈。"
+            "source_id须来自本轮用户来源表，不能用助手回答或资料冒充用户原话；"
+            "状态未表达填null，任务或来源不明先澄清。"
+            "更正使用旧记录ID和更正后完整正文，保留未要求改变的条件；"
+            "整理正文不是直接引语，普通补充不自动替代旧记录。"
+            "反馈、创建和取消每轮共用一个待确认名额，与目标/计划修改分轮处理。"
+            "pending只表示提议已生成；程序请求确认后执行，磁盘保存以程序结果为准。"
+            "登记任务或反馈不自动修改计划，取消任务也不等于完成任务。\n"
+        )
+    )
+    goal_change_rule = "" if plan_only else (
+        f"目标修改仍将完整候选放在{GOAL_START_TAG}与{GOAL_END_TAG}之间，最多一组且不嵌套。"
+    )
     # 规则按职责组织；案例和具体业务数值应留在用户数据或评测用例中。
     # 动态评估：核对工具选择、候选确认、历史查询与引用，不只比较字符数。
     return (
@@ -221,43 +239,30 @@ def _build_interactive_system_prompt(
         "【资料访问】\n"
         f"{retrieval_rules}"
         f"{MATERIAL_ACCESS_RULES}"
-        "list_material_files用于发现文件；read_material_lines读取已知TXT/MD/PY行范围；"
-        "read_pdf_pages读取已知PDF物理页码。清单不等于正文，印刷页码不能自行当作物理页码。"
         "按工具实际返回范围回答；失败、分页未完或截断须说明。"
         "no_text只表示未提取到文字，不证明页面空白；提取文字也不代表图片、表格或公式完整。"
-        f"{PDF_CITATION_RULES}"
-        "资料引用沿用原证据提供的位置字段，不补造或拼接page、chunk、lines。"
+        "本轮工具返回的资料来源由程序在文末列出，无需复制引用标记；"
+        "可自然说明文件或章节，章节定位须有原文依据。"
+        "预载资料仍沿用已有位置引用，不补造位置。"
         "原文须支持相邻论断；概览和历史引用不能代替正文核对，未召回不等于资料不存在。"
-        f"每轮所有工具合计最多调用{settings.interactive_max_retrieval_calls}次，"
+
         "只获取当前需要的信息，复用已有结果。\n"
         "【学习状态】\n"
         "当前学习计划正文表示已确认的安排，tasks表示登记任务的进度、理解和取消状态；"
         "不能用登记任务表代替当前计划概括。任务已登记不代表今天执行，也不代表仍待确认。"
-        "activity_status与understanding_status分别表示进度和用户自报理解；两者不能互相推导，"
-        "自报理解不是客观掌握证明。"
+        "activity_status表示任务进度，understanding_status表示用户自己填写的理解程度。"
+        "两者独立，用户填写的理解程度不代表客观测评结果。"
         "tasks_need_review=true只表示任务与新计划的对应关系待核对，"
         "不能因此声称计划缺失或拒绝复述。"
         "已取消任务保留历史状态，不默认继续安排，理解反馈不自动恢复任务。"
         "反馈分组和版本号不判定有效期；适用性或对象不明时先澄清。"
         "没有正式记录不等于用户没有表达过。\n"
-        "【学习操作】\n"
-        "用户明确要求记录或更正反馈时调用propose_learning_feedback；"
-        "新增待办调用propose_task_creation；取消登记任务调用propose_task_cancellation。"
-        "普通问答、假设和仅讨论不构成写入授权；不改计划不等于禁止记录反馈。"
-        "source_id须来自本轮用户来源表，不能用助手回答或资料冒充用户原话；"
-        "状态未表达填null，任务或来源不明先澄清。"
-        "更正使用旧记录ID和更正后完整正文，保留未要求改变的条件；"
-        "整理正文不是直接引语，普通补充不自动替代旧记录。"
-        "反馈、创建和取消每轮共用一个待确认名额，与目标/计划修改分轮处理。"
-        "pending只表示提议已生成；程序请求确认后执行，磁盘保存以程序结果为准。"
-        "登记任务或反馈不自动修改计划，取消任务也不等于完成任务。\n"
+        f"{learning_rules}"
         "【历史查询】\n"
         "read_feedback_history查询正式反馈；read_confirmation_history查询候选的程序确认结果。"
         # 全范围搜索不依赖来源目录，默认直接定位，为必要的原文核对保留工具预算。
-        "核对对话原话时，已知来源编号和轮次就用read_conversation_turn直接回读；"
-        "位置未知则先用search_conversation_turns定位，未知来源时省略source_index搜索全部关联来源，已知来源时指定。"
-        "仅在用户要求查看来源目录或需要按来源缩小查询范围时，用list_conversation_sources；"
-        "命中后完整回读；引用使用返回的citation_ref，完整来源由程序生成。"
+        "需要核对历史原话时按需定位和回读，搜索位置不等于原文。"
+        "引用使用返回的citation_ref，完整来源由程序生成。"
         "相关依据不在当前上下文时按需查询，不重复读取已充分提供的信息。"
         "按current_date解释相对日期；记录日期不等于适用日期。"
         "查询范围、分页、截断和缺失字段须如实说明；查不到不能推断事件从未发生。"
@@ -267,11 +272,9 @@ def _build_interactive_system_prompt(
         "【目标与计划修改】\n"
         "只有用户明确要求修改时才提交完整候选；解释或讨论不提交。"
         "完整计划调用propose_plan_change提交；工具只登记pending，确认与保存由程序负责。"
-        f"目标修改仍将完整候选放在{GOAL_START_TAG}与{GOAL_END_TAG}之间，最多一组且不嵌套。"
+        f"{goal_change_rule}"
         "不代替用户确认，不宣称已更新或保存。\n\n"
-        f"当前学习目标：{learning_goal}\n\n"
         f"资料分析结果：\n{analysis}\n\n"
-        f"当前学习计划：\n{plan}\n\n"
         f"资料证据区（策略={evidence_mode}）：\n{material_evidence}\n"
     )
 
@@ -396,6 +399,7 @@ def _invoke_interactive_turn(
     audit_trace: dict | None = None,
     feedback_inbox: LearningActionInbox | None = None,
     plan_inbox: PlanProposalInbox | None = None,
+    stream_observer=None,
 ) -> str:
     """执行一轮可选检索/读取；工具轨迹只在当前轮次保留。"""
     # 仅由测试或评测入口显式启用；每轮必须传入新的空字典。
@@ -416,14 +420,25 @@ def _invoke_interactive_turn(
     # 每轮重新建立，只认可本轮真实成功回读的引用。
     verified_history_citations: set[str] = set()
     history_citation_refs: dict[str, str] = {}
+    public_tool_texts: list[str] = []
+    learning_action_requested = False
+    # 来源展示独立于可选审计；每轮新建，不继承上轮的核验状态。
+    source_ledger = TurnSourceLedger()
 
     def call_model(llm, model_messages, *, stage):
         """沿用原调用入口，仅额外记录公开响应，不记录私有思维链。"""
+        options = {"stream_observer": stream_observer} if stream_observer is not None else {}
         response = invoke_llm_response(
             llm,
             model_messages,
             stage=stage,
+            **options,
         )
+        if (getattr(response, "tool_calls", None)
+                and isinstance(response.content, str) and response.content.strip()):
+            # content是公开说明，不是reasoning_content。模型可能分段完成回答，
+            # 不能因为同条消息含工具调用就丢弃已经生成的公开内容。
+            public_tool_texts.append(response.content.strip())
 
         if audit_trace is not None:
             audit_trace["model_responses"].append({
@@ -436,12 +451,25 @@ def _invoke_interactive_turn(
                 "usage": deepcopy(
                     getattr(response, "usage_metadata", None)
                 ),
+                "invocation_audit": deepcopy(
+                    getattr(response, "response_metadata", {}).get("invocation_audit")
+                ),
             })
 
         return response
 
     def record_final_answer(text: str) -> str:
         """数据候选与展示分开；执行要求满足后才开放确认通道。"""
+        # 先检查原始文本里的混合操作，不能先替换正文而掩盖旧入口标记。
+        has_learning_action = (
+            feedback_inbox is not None and feedback_inbox.pending is not None
+        )
+        mixed_operations = has_learning_action and (
+            (plan_inbox is not None and plan_inbox.pending is not None)
+            or any(tag in text for tag in (
+                PLAN_START_TAG, PLAN_END_TAG, GOAL_START_TAG, GOAL_END_TAG,
+            ))
+        )
         if plan_inbox is not None and (
             requirement is None or required_tool_confirmed()
         ):
@@ -472,9 +500,51 @@ def _invoke_interactive_turn(
                     + pending_plan.plan_markdown
                 )
 
+        if (
+            feedback_inbox is not None
+            and not mixed_operations
+            and not (plan_inbox is not None and plan_inbox.pending is not None)
+            and (requirement is None or required_tool_confirmed())
+        ):
+            # 保留原有伪造程序回执的提示，不让交付替换掩盖该诊断。
+            sanitized = sanitize_learning_action_reply(text)
+            if sanitized != text:
+                text = sanitized
+            else:
+                delivery = render_learning_action_delivery(
+                    feedback_inbox.pending,
+                    attempted=learning_action_requested,
+                )
+                if delivery is not None:
+                    text = delivery
+
+        has_pending = ((plan_inbox is not None and plan_inbox.pending is not None)
+            or (feedback_inbox is not None and feedback_inbox.pending is not None))
+        if (
+            not has_pending and not learning_action_requested
+            and (requirement is None or required_tool_confirmed())
+        ):
+            fragments = []
+            for fragment in dict.fromkeys(public_tool_texts):
+                # 中间文本只作展示，不接入候选/授权数据通道；避免重新引入旧标记。
+                if (fragment in text or any(tag in fragment for tag in
+                        (PLAN_START_TAG, PLAN_END_TAG, GOAL_START_TAG, GOAL_END_TAG))
+                        or has_unbacked_learning_proposal(fragment, None)):
+                    continue
+                cleaned = sanitize_learning_action_reply(fragment)
+                if cleaned.strip():
+                    fragments.append(cleaned)
+            if fragments:
+                text = ("【工具阶段的公开说明，非最终结论】\n"
+                    + "\n\n".join(fragments) + "\n\n【最终回答】\n" + text)
+
         text = _sanitize_history_citations(
             text, verified_history_citations, history_citation_refs,
         )
+        # confirmation_plan已单独确定；来源目录只进入展示及聊天记录。
+        source_footer = source_ledger.render()
+        if source_footer:
+            text = text.rstrip() + "\n\n" + source_footer
         if audit_trace is not None:
             audit_trace["final_answer"] = text
             audit_trace["finished"] = True
@@ -690,9 +760,12 @@ def _invoke_interactive_turn(
     )
 
     while True:
+        notice = budget_notice(call_limit - used_calls)
+        # 只在临近总预算时提示；不写回历史，也不改变执行额度。
+        decision_messages = [*messages, HumanMessage(content=notice)] if notice else messages
         response = call_model(
             tool_llm,
-            messages,
+            decision_messages,
             stage=f"交互回答-工具判断{used_calls + 1}",
         )
         messages.append(response)
@@ -775,6 +848,12 @@ def _invoke_interactive_turn(
             args = call.get("args", {})
             executed = False
             result_reused = False
+            if feedback_inbox is not None and name in {
+                "propose_learning_feedback", "propose_task_creation",
+                "propose_task_cancellation",
+            }:
+                # 预算拒绝和参数失败也属于请求过，不能被交付成成功操作。
+                learning_action_requested = True
 
             # 在真实调用前保留参数副本，避免工具修改args后污染审计记录。
             audit_args = (
@@ -845,6 +924,8 @@ def _invoke_interactive_turn(
                         # 表示真实进入工具调用；即使参数校验或读取失败，
                         # 也与预算拒绝、重复拒绝等情况区分开。
                         executed = True
+                        if stream_observer is not None:
+                            stream_observer("tool_activity", {"id": call["id"], "name": name, "status": "running"})
                         result = str(tools_by_name[name].invoke(args))
                         execution_returned = True
 
@@ -927,6 +1008,12 @@ def _invoke_interactive_turn(
             no_progress_calls = (
                 0 if made_progress else no_progress_calls + 1
             )
+            source_ledger.observe(name, result, executed=executed)
+            if stream_observer is not None and (executed or result_reused):
+                stream_observer("tool_activity", {
+                    "id": call["id"], "name": name,
+                    "status": ("reused" if result_reused else "completed" if execution_succeeded else "failed"),
+                })
 
             if audit_trace is not None:
                 audit_trace["tool_results"].append({
@@ -1179,7 +1266,12 @@ def _context_change_history(
     confirmation_trace: dict[str, str] | None = None,
 ) -> str:
     """将程序处理结果与候选回复一起记录，避免误认候选已生效。"""
-    details = confirmation_details(status, confirmation_trace)
+    # 与只读确认历史的返回契约一致；程序已知的结果无需再从展示文本推断。
+    details = {
+        **confirmation_details(status, confirmation_trace),
+        "decision": status,
+        "context_revision": revision,
+    }
     return (
         "【以下回复包含候选变更，不单独代表生效】\n"
         f"{response_text}\n\n"
@@ -1401,7 +1493,7 @@ def _run_interactive_session(
                 current_path=current_state_path,
             )
 
-    plain_llm = create_llm()  # 普通问答使用默认 Plus。
+    plain_llm = create_llm()
 
     # 反馈解析按需创建 Flash，并在本次会话复用。
     # Max 的创建能力保留在 config.py，当前命令行不提供切换入口。
@@ -1416,6 +1508,7 @@ def _run_interactive_session(
             max_context_chars=(
                 settings.interactive_retrieval_max_context_chars
             ),
+            structured_result=True,
         )
     else:
         retrieval_tool = None
@@ -1428,6 +1521,8 @@ def _run_interactive_session(
     )
     list_tool = build_list_material_files_tool(material_dir)
     pdf_tool = build_read_pdf_pages_tool(material_dir)
+    from ai_agent.resources.document_structure import build_inspect_document_structure_tool
+    structure_tool = build_inspect_document_structure_tool(material_dir)
     feedback_inbox = LearningActionInbox()
     plan_inbox = PlanProposalInbox(
         PLAN_START_TAG,
@@ -1446,7 +1541,7 @@ def _run_interactive_session(
     )
     history_tools = history_access.tools if history_access is not None else ()
     interactive_tools = [
-        list_tool, read_tool, pdf_tool,
+        list_tool, read_tool, pdf_tool, structure_tool,
         feedback_inbox.tool, feedback_inbox.task_tool,
         feedback_inbox.cancellation_tool, feedback_inbox.history_tool,
         feedback_inbox.confirmation_history_tool,
@@ -1458,6 +1553,14 @@ def _run_interactive_session(
         interactive_tools.insert(0, retrieval_tool)
 
     tool_llm = create_llm_with_tools(interactive_tools)
+    plan_tool_llm = None
+    plan_plain_llm = None
+    extra_tools = tuple(t for t in interactive_tools if t is not read_tool and t is not retrieval_tool)
+    learning_write_tools = {
+        feedback_inbox.tool.name, feedback_inbox.task_tool.name,
+        feedback_inbox.cancellation_tool.name,
+    }
+    plan_extra_tools = tuple(t for t in extra_tools if t.name not in learning_write_tools)
     logger.debug(
         "交互工具已绑定：tools=%s",
         [item.name for item in interactive_tools],
@@ -1476,6 +1579,7 @@ def _run_interactive_session(
         "也可自然表达反馈，由助手提出建议、经你确认后记录；"
         "精确反馈入口：/report 任务ID 反馈内容"
     )
+    print("计划操作：/plan-adjust 要求、/plan-replace 要求")
     print(
         "任务可用/task直接登记，或用自然语言提出创建建议并确认；"
         "状态或完整问答变化后更新同一个当前存档。"
@@ -1515,23 +1619,20 @@ def _run_interactive_session(
             )
             continue
 
-        # 必须在执行命令之前保留旧状态，才能判断命令造成的实际变化。
-        previous_state = learning_state
-        learning_state, command_message = handle_learning_command(
-            learning_state,
-            user_input,
-        )
-        if command_message is not None:
-            print(f"状态助手：{command_message}\n")
-
-            # 登记或反馈改变状态才保存；
-            # 查询、非法输入和手动保存不会再触发额外快照。
-            _autosave_learning_change(
-                previous_state,
-                learning_state,
-                current_path=current_state_path,
-            )
+        try:
+            plan_request = parse_plan_change_command(user_input)
+        except ValueError as exc:
+            print(f"状态助手：{exc}\n")
             continue
+        if plan_request is None:
+            previous_state = learning_state
+            learning_state, command_message = handle_learning_command(
+                learning_state, user_input,
+            )
+            if command_message is not None:
+                print(f"状态助手：{command_message}\n")
+                _autosave_learning_change(previous_state, learning_state, current_path=current_state_path)
+                continue
 
         # 复制消息列表，避免把临时状态写入 ConversationMemory。
         request_messages = list(memory.get_messages_for_llm())
@@ -1556,28 +1657,47 @@ def _run_interactive_session(
             user_input,
             history_messages=memory.get_messages_for_llm(),
         )
-        request_messages.append(feedback_inbox.source_message())
+        if plan_request is None:
+            request_messages.append(feedback_inbox.source_message())
 
         if history_access is not None:
             history_access.start_turn(memory.history_archive)
             request_messages.append(history_access.source_message())
 
+        active_llm = tool_llm
+        active_extra_tools = extra_tools
+        active_feedback = feedback_inbox
+        model_input = user_input
+        if plan_request is not None:
+            if plan_tool_llm is None:
+                plan_tool_llm = create_llm_with_tools([
+                    tool for tool in (retrieval_tool, read_tool, *plan_extra_tools)
+                    if tool is not None
+                ], role="auxiliary")
+                plan_plain_llm = create_llm(role="auxiliary")
+            active_llm = plan_tool_llm
+            active_extra_tools = plan_extra_tools
+            active_feedback = None
+            model_input = plan_request.instructions
+            plan_prompt = _build_interactive_system_prompt(
+                analysis, current_plan, material_context, current_goal,
+                retrieval_available=retrieval_available,
+                on_demand_eligible=on_demand_eligible, plan_only=True,
+            )
+            if initial_state is not None:
+                plan_prompt += RESUMED_SESSION_RULES
+            request_messages[0] = request_messages[0].model_copy(update={"content": plan_prompt})
+            request_messages.append(plan_request.mode_message())
+
         response_text = _invoke_interactive_turn(
             request_messages=request_messages,
-            user_input=user_input,
-            plain_llm=plain_llm,
-            tool_llm=tool_llm,
+            user_input=model_input,
+            plain_llm=plan_plain_llm if plan_request is not None else plain_llm,
+            tool_llm=active_llm,
             retrieval_tool=retrieval_tool,
             read_tool=read_tool,
-            extra_tools=(
-                list_tool, pdf_tool,
-                feedback_inbox.tool, feedback_inbox.task_tool,
-                feedback_inbox.cancellation_tool, feedback_inbox.history_tool,
-                feedback_inbox.confirmation_history_tool,
-                plan_inbox.tool,
-                *history_tools,
-            ),
-            feedback_inbox=feedback_inbox,
+            extra_tools=active_extra_tools,
+            feedback_inbox=active_feedback,
             plan_inbox=plan_inbox,
         )
 
@@ -1611,6 +1731,15 @@ def _run_interactive_session(
             # 展示被安全过滤时，不能仍通过隐藏的数据通道提交该计划。
             submitted_plan = None
         response_text = sanitized_response
+        if plan_request is not None:
+            result = collect_plan_draft(response_text, plan_inbox, (
+                PLAN_START_TAG, PLAN_END_TAG, GOAL_START_TAG, GOAL_END_TAG,
+            ))
+            # 保留外层冲突与安全过滤结果，再按程序交付状态展示。
+            submitted_plan = result.confirmation_plan if submitted_plan is not None else None
+            response_text = result.message
+            if submitted_plan is None:
+                response_text = "【本轮未生成可确认的计划】\n" + response_text
         log_citation_summary("交互回答", response_text,)
         # add_user不触发摘要；AI回复等确认结论确定后再记录。
         memory.add_user(user_input)
@@ -1683,6 +1812,8 @@ def _run_interactive_session(
             if submitted_plan is not None:
                 updated_plan = submitted_plan
                 updated_goal = None
+            elif plan_request is not None:
+                updated_plan = updated_goal = None
             else:
                 # 只有旧文本入口使用标记解析器，新工具直接传递候选正文。
                 updated_plan = _extract_updated_plan(response_text)

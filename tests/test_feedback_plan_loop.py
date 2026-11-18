@@ -86,7 +86,8 @@ def test_adjustment_receives_feedback_and_preserves_learning_records(monkeypatch
     assert saved.tasks == original.tasks
     assert saved.feedback_records == original.feedback_records
     assert saved.conversation_memory.strategy == strategy
-    assert saved.plan_markdown in requests[1][0].content
+    from tests.helpers.request_state import current_state
+    assert current_state(requests[1])["plan_markdown"] == saved.plan_markdown
     following = next(json.loads(message.content) for message in requests[1]
                      if message.type == "human" and str(message.content).startswith('{"context_type": "current_learning_state"'))
     visible_key = "previous_context_feedback" if adopted else "current_context_feedback"
@@ -115,7 +116,7 @@ def test_adjustment_receives_feedback_and_preserves_learning_records(monkeypatch
     )
 
     assert len(resumed_requests) == 1
-    assert saved.plan_markdown in resumed_requests[0][0].content
+    assert current_state(resumed_requests[0])["plan_markdown"] == saved.plan_markdown
     restored_view = next(
         json.loads(message.content) for message in resumed_requests[0]
         if message.type == "human"

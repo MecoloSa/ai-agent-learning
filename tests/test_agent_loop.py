@@ -76,17 +76,6 @@ def analysis_limits(monkeypatch):
         ),
     )
     monkeypatch.setattr(agents_module, "MAX_TOOL_ROUNDS", 12)
-    monkeypatch.setattr(
-        agents_module,
-        "ANALYSIS_TOOL_LIMITS",
-        {
-            "list_learning_files": 2,
-            "read_learning_file": 6,
-            "search_learning_files": 4,
-            "retrieve_learning_context": 3,
-            "summarize_text_statistics": 2,
-        },
-    )
 
 def test_agent_can_finish_without_tool_call(monkeypatch):
     tool = FakeTool()
@@ -514,9 +503,18 @@ def test_analysis_total_limit_applies_inside_one_batch(
     )
 
     captured = []
+    emitted_results = []
+    original_tool_message = agents_module.ToolMessage
+
+    def capture_tool_message(*args, **kwargs):
+        message = original_tool_message(*args, **kwargs)
+        emitted_results.append(message)
+        return message
+
+    monkeypatch.setattr(agents_module, "ToolMessage", capture_tool_message)
 
     def fake_invoke(llm, messages, *, stage):
-        # 保留列表引用：函数后续追加的工具结果也能被检查。
+        # 请求是当时的副本；执行回执从创建位置观察，不依赖列表别名。
         captured.append(messages)
         return batch
 
@@ -529,27 +527,22 @@ def test_analysis_total_limit_applies_inside_one_batch(
     assert tool.call_count == 2
     assert len(captured) == 1
 
-    observations = [
-        message
-        for message in captured[0]
-        if isinstance(message, ToolMessage)
-    ]
+    observations = emitted_results
     # 被拒绝的三次请求也必须有对应结果。
     assert {message.tool_call_id for message in observations} == {
         f"call-{index}" for index in range(5)
     }
+    assert len(observations) == 5
+    assert sum("tool_budget_exceeded" in message.content for message in observations) == 3
 
 
-def test_analysis_per_tool_limit_blocks_new_arguments(
+def test_analysis_distinct_reads_share_total_budget(
     monkeypatch, analysis_limits
 ):
-    """不断更换参数也不能突破单工具额度。"""
+    """七次不同读取不再被旧六次额度挡住，仍受总预算十二次保护。"""
     tool = FakeTool(result="资料证据")
     tool.name = "read_learning_file"
 
-    monkeypatch.setitem(
-        agents_module.ANALYSIS_TOOL_LIMITS, tool.name, 2
-    )
     prepare_agent(
         monkeypatch,
         tool,
@@ -559,15 +552,13 @@ def test_analysis_per_tool_limit_blocks_new_arguments(
                 name=tool.name,
                 args={"relative_path": f"{index}.md"},
             )
-            for index in range(4)
-        ],
+            for index in range(7)
+        ] + [AIMessage(content="七份资料读取完成。")],
     )
 
-    with pytest.raises(agents_module.AnalysisExecutionError) as caught:
-        agents_module.analyse_materials_agentic("materials", "学习 Agent")
-
-    assert caught.value.reason == "tool_no_progress"
-    assert tool.call_count == 2
+    analysis, _ = agents_module.analyse_materials_agentic("materials", "学习 Agent")
+    assert analysis == "七份资料读取完成。"
+    assert tool.call_count == 7
 
 
 def test_analysis_can_finish_after_using_exact_total_budget(
@@ -596,10 +587,10 @@ def test_analysis_can_finish_after_using_exact_total_budget(
     assert analysis == "资料分析完成。"
     assert tool.call_count == 1
 
-def test_analysis_budget_uses_global_and_per_tool_limits(
+def test_analysis_tools_share_global_remaining_budget(
     monkeypatch, analysis_limits
 ):
-    """工具自身剩余额度不能突破全局剩余额度。"""
+    """工具名称下展示的是同一个剩余预算，不是各自独立配额。"""
     status = agents_module._build_analysis_budget_status(
         tool_names=[
             "read_learning_file",
@@ -613,10 +604,10 @@ def test_analysis_budget_uses_global_and_per_tool_limits(
 
     assert status["remaining_total"] == 2
     assert status["remaining_by_tool"] == {
-        "read_learning_file": 1,
+        "read_learning_file": 2,
         "retrieve_learning_context": 2,
     }
-    assert "read_learning_file" in status["notice"]
+    assert status["remaining_total"] != sum(status["remaining_by_tool"].values())
 
 
 @pytest.mark.parametrize(
@@ -705,23 +696,16 @@ def test_analysis_budget_updates_without_polluting_evidence(
         "materials", "学习 Agent"
     )
 
-    marker = "\n[程序实时预算；不是资料证据]\n"
-    statuses = [
-        json.loads(content.split(marker, 1)[1])
-        for content in captured_system_contents
-    ]
-
-    assert [status["remaining_total"] for status in statuses] == [
-        2, 1, 0
-    ]
-    assert [
-        status["remaining_by_tool"]["read_learning_file"]
-        for status in statuses
-    ] == [2, 1, 0]
+    marker = "\n[当前运行状态，非资料证据]"
+    assert all(
+        f"工具合计还可执行{remaining}次" in content
+        for remaining, content in zip([2, 1, 0], captured_system_contents)
+    )
+    assert all("remaining_by_tool" not in content for content in captured_system_contents)
 
     assert all(
         content.count(marker) == 1
         for content in captured_system_contents
     )
-    assert "程序实时预算" not in trace
+    assert marker not in trace
     assert tool.call_count == 2
