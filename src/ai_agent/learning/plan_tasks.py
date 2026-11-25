@@ -41,6 +41,30 @@ def validate_task_changes(state: LearningState, changes: tuple[TaskChange, ...])
             seen.add(key)
 
 
+def validate_split_changes(changes: tuple[TaskChange, ...], parent_id: str) -> None:
+    additions = [change for change in changes if change.operation == "add"]
+    other_changes = [change for change in changes if change.operation != "add"]
+    # 细化只允许归档用户选择的任务，其他任务继续沿用原来的安排。
+    if (
+        len(other_changes) != 1
+        or other_changes[0].operation != "archive"
+        or other_changes[0].task_id != parent_id
+    ):
+        raise ValueError("细化任务只能归档所选任务并新增子任务。")
+    if len(additions) < 2:
+        raise ValueError("细化任务至少需要两个子任务。")
+
+    seen_titles = set()
+    for change in additions:
+        title = (change.title or "").strip()
+        key = title.casefold()  # 规范化只用于比较，不修改展示标题。
+        if not key:
+            raise ValueError("子任务标题不能为空。")
+        if key in seen_titles:
+            raise ValueError(f"子任务标题重复：{title}")
+        seen_titles.add(key)
+
+
 def place_split_children(
     tasks: tuple[LearningTask, ...], parent_id: str, child_ids: tuple[str, ...],
 ) -> tuple[LearningTask, ...]:
@@ -59,10 +83,8 @@ def apply_task_changes(
     state: LearningState, changes: tuple[TaskChange, ...], *, split_from_task_id: str | None = None,
 ) -> LearningState:
     validate_task_changes(state, changes)
-    if split_from_task_id is not None and not any(
-        change.operation == "archive" and change.task_id == split_from_task_id for change in changes
-    ):
-        raise ValueError("细化任务必须归档原任务。")
+    if split_from_task_id is not None:
+        validate_split_changes(changes, split_from_task_id)
     tasks = {task.task_id: task for task in state.tasks}
     from_plan = tasks[split_from_task_id].from_plan if split_from_task_id is not None else True
     new_ids = []
@@ -80,7 +102,6 @@ def apply_task_changes(
             fields = {"is_cancelled": True, "cancellation_reason": "用户采用的计划任务变更。"}
         else:
             fields = change.model_dump(exclude_none=True, exclude={"operation", "task_id"})
-            fields["from_plan"] = True
         tasks[key] = LearningTask.model_validate({**task.model_dump(), **fields})
     ordered = tuple(tasks.values())
     if split_from_task_id is not None:

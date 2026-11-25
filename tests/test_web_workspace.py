@@ -18,8 +18,9 @@ import ai_agent.main as app
 import ai_agent.web_workspace as web
 from ai_agent.learning.learning_state import LearningState, LearningTask
 from ai_agent.learning.plan_change_request import PlanDraftResult
+from ai_agent.learning.plan_tasks import TaskChange
 from ai_agent.learning.workspace_service import WorkspaceCommand, WorkspaceService, workspace_view
-from ai_agent.learning.workspace_store import WorkspaceConflict, WorkspaceStore
+from ai_agent.learning.workspace_store import PlanCandidate, WorkspaceConflict, WorkspaceEvent, WorkspaceStore
 from ai_agent.persistence.session_materials import create_material_binding
 from ai_agent.persistence.state_store import StateSnapshot, load_learning_state
 from ai_agent.web_workspace import create_server
@@ -71,6 +72,79 @@ def fetch(base, path, *, token=None, origin=None, data=None, accept=None):
         response = exc
     with response:
         return response.code, response.read().decode("utf-8")
+
+
+def test_web_chat_modes_bind_delegation_per_turn(state, tmp_path, monkeypatch):
+    from ai_agent.runtime import task_delegation
+
+    monkeypatch.setenv("INTERACTIVE_TASK_DELEGATION_ENABLED", "true")
+    store = WorkspaceStore(tmp_path / "modes.sqlite3", state)
+    service = WorkspaceService(store, tmp_path / "archives")
+    thinking = []
+    observed = []
+    original = task_delegation.build_learning_delegation_tool
+
+    def build(*args, **options):
+        thinking.append(options["worker_thinking"])
+        return original(*args, **options)
+
+    def answer(**kwargs):
+        observed.append({tool.name for tool in kwargs["extra_tools"]})
+        return "已回答。"
+
+    monkeypatch.setattr(task_delegation, "build_learning_delegation_tool", build)
+    monkeypatch.setattr(app, "create_llm", lambda **_: object())
+    monkeypatch.setattr(app, "create_llm_with_tools", lambda *_, **__: object())
+    monkeypatch.setattr(app, "_invoke_interactive_turn", answer)
+    with serving(service) as base:
+        _, markup = fetch(base, "/")
+        token = re.search(r'name="workspace-token" content="([0-9a-f]+)"', markup)[1]
+        for payload in ({}, {"deep_mode": True}, {"deep_mode": True, "worker_thinking": False},
+                        {"deep_mode": False, "worker_thinking": False}):
+            request = command("chat", store.load().version, text="解释工具的区别", **payload)
+            code, body = fetch(base, "/api/action", token=token, origin=base, data=request.model_dump(mode="json"))
+            assert code == 200, body
+    assert thinking == [True, False]
+    assert ["delegate_learning_task" in tools for tools in observed] == [False, True, True, False]
+    assert all("read_pdf_pages" in tools for tools in observed)
+
+
+def test_web_setup_requires_materials_and_adopted_plan(state, tmp_path):
+    from ai_agent.learning.workspace_store import empty_learning_state
+
+    store = WorkspaceStore(tmp_path / "setup.sqlite3", empty_learning_state())
+    requests = []
+
+    def draft(snapshot, text, request):
+        requests.append((text, request.mode))
+        return snapshot.state, PlanDraftResult("已拟定。", "# 首份计划\n\n第一周阅读教材。")
+
+    with serving(WorkspaceService(store, tmp_path / "archives", draft_turn=draft)) as base:
+        _, markup = fetch(base, "/")
+        token = re.search(r'name="workspace-token" content="([0-9a-f]+)"', markup)[1]
+
+        def send(action, **payload):
+            cmd = command(action, store.load().version, **payload)
+            code, body = fetch(base, "/api/action", token=token, origin=base, data=cmd.model_dump(mode="json"))
+            return code, json.loads(body)
+
+        assert workspace_view(store.load())["setup_stage"] == "materials"
+        assert send("chat", text="提前聊天", deep_mode=True)[0] == 400
+        assert send("draft", mode="replace", instructions="制定计划")[0] == 400
+        code, bound = send("bind_materials", directory=state.material_binding.root_dir)
+        assert code == 200 and bound["workspace"]["setup_stage"] == "plan"
+        assert bound["workspace"]["deep_mode_available"] is False
+        assert send("chat", text="提前聊天")[0] == 400
+        assert send("draft", mode="adjust", instructions="调整计划")[0] == 400
+        assert send("create_task", title="提前登记")[0] == 400
+        for decision in ("reject", "adopt"):
+            code, draft_body = send("draft", mode="replace", instructions="参考教材安排两个月")
+            assert code == 200 and draft_body["workspace"]["setup_stage"] == "plan"
+            assert store.load().state.plan_markdown == empty_learning_state().plan_markdown
+            code, reviewed = send("decide", proposal_id=draft_body["event"]["proposal_id"], decision=decision)
+            assert code == 200 and reviewed["workspace"]["setup_stage"] == ("ready" if decision == "adopt" else "plan")
+        assert "第一周阅读教材" in store.load().state.plan_markdown
+        assert requests == [("参考教材安排两个月", "replace")] * 2
 
 
 def test_startup_creates_default_database_and_restores_without_json(tmp_path, monkeypatch):
@@ -208,7 +282,8 @@ def test_task_integration_is_read_only_and_scoped(state, tmp_path, monkeypatch):
 
 def test_web_can_bind_list_and_read_local_material(state, tmp_path, monkeypatch):
     path = tmp_path / "workspace.sqlite3"
-    store = WorkspaceStore(path, create=True)
+    # 已有正式计划的对话还能重新关联资料，再正常核对正文。
+    store = WorkspaceStore(path, state.model_copy(update={"material_binding": None}))
     directory = Path(state.material_binding.root_dir)
     (directory / "中文笔记.txt").write_text("本地文件验收编号 3617\n", encoding="utf-8")
     monkeypatch.setattr(app, "create_llm", lambda: object())
@@ -570,6 +645,97 @@ def test_web_model_turn_uses_real_tool_loop_and_only_plan_write(state, tmp_path,
     assert store.load().state.context_revision == 1
     if not submit:
         assert "保留哪项活动" in event.message and not store.load().proposals
+
+
+def test_web_discussion_discards_unbound_proposal_but_draft_can_be_adopted(state, tmp_path, monkeypatch):
+    store = WorkspaceStore(tmp_path / "workspace.db", state)
+    service = WorkspaceService(store, tmp_path)
+    bound_names = []
+    monkeypatch.setattr(app, "create_llm", lambda **_: object())
+    monkeypatch.setattr(app, "create_llm_with_tools",
+                        lambda tools, **_: bound_names.append({tool.name for tool in tools}) or object())
+    proposal = AIMessage(content="", tool_calls=[{"name": "propose_plan_change", "id": "p1",
+        "args": {"plan_markdown": "阅读5分钟，口头说明10分钟", "task_changes": []}}])
+
+    def model(llm, messages, *, stage):
+        if "可以讨论学习安排" in messages[0].content:
+            assert "propose_plan_change" not in messages[0].content
+            if any(message.type == "tool" for message in messages):
+                return AIMessage(content="可以先用一句话解释工具的作用。")
+        return proposal
+
+    monkeypatch.setattr(app, "invoke_llm_response", model)
+    chat = service.execute(command("chat", 1, text="只讨论怎么练习口头说明，不要生成候选。"))
+    assert chat.status == "answered" and chat.proposal_id is None and not store.load().proposals
+    assert "propose_plan_change" not in bound_names[0]
+    assert {"read_material_lines", "read_feedback_history"} <= bound_names[0]
+    draft = service.execute(command("draft", 1, mode="adjust", instructions=INSTRUCTIONS))
+    assert draft.status == "pending" and "propose_plan_change" in bound_names[-1]
+    assert store.load().state.plan_markdown == state.plan_markdown
+    service.execute(command("decide", 1, proposal_id=draft.proposal_id, decision="adopt"))
+    assert store.load().state.context_revision == 2
+
+
+def test_web_discussion_rejects_candidate_from_generation_adapter(state, tmp_path):
+    store = WorkspaceStore(tmp_path / "workspace.db", state)
+    service = WorkspaceService(store, tmp_path, draft_turn=lambda ws, *_: (
+        ws.state, PlanDraftResult("候选", "阅读10分钟"),
+    ))
+    with pytest.raises(ValueError, match="当前为学习对话"):
+        service.execute(command("chat", 1, text="只讨论，不生成候选。"))
+    assert not store.load().proposals and store.load().state == state
+
+
+def split_with_duplicates():
+    return tuple(TaskChange.model_validate(data) for data in [
+        {"operation": "archive", "task_id": "read-001"},
+        {"operation": "add", "title": "准备例子"},
+        {"operation": "add", "title": " 准备例子 "},
+        {"operation": "add", "title": "实际说明"},
+    ])
+
+
+@pytest.mark.parametrize("historical_candidate", [False, True])
+def test_web_split_rejects_duplicates_at_draft_and_adoption(state, tmp_path, historical_candidate):
+    store = WorkspaceStore(tmp_path / "workspace.db", state)
+    changes = split_with_duplicates()
+    service = WorkspaceService(store, tmp_path, draft_turn=lambda ws, *_: (
+        ws.state, PlanDraftResult("拟细化任务", ws.state.plan_markdown, changes),
+    ))
+    if historical_candidate:
+        before = store.load()
+        candidate = PlanCandidate(id=uuid4().hex, base_version=1, mode="split_task", instructions="细化",
+            base_plan=state.plan_markdown, markdown=state.plan_markdown, task_changes=changes)
+        store.commit(before, before.model_copy(update={"proposals": (candidate,)}), uuid4().hex, "fixture",
+                     WorkspaceEvent(action="draft", status="pending", message="旧候选", proposal_id=candidate.id))
+        with pytest.raises(ValueError, match="子任务标题重复：准备例子"):
+            service.execute(command("decide", 1, proposal_id=candidate.id, decision="adopt"))
+        assert store.load().proposals[0].status == "pending"
+    else:
+        result = service.execute(command("draft", 1, mode="split_task", task_id="read-001",
+                                         instructions="拆成准备例子和实际说明"))
+        assert result.status == "not_submitted" and "子任务标题重复：准备例子" in result.message
+        assert not store.load().proposals
+    assert store.load().state == state
+
+
+def test_web_candidate_rename_preserves_independent_task_and_feedback(state, tmp_path):
+    store = WorkspaceStore(tmp_path / "workspace.db", state)
+    change = TaskChange(operation="update", task_id="read-001", title="复习记录")
+    service = WorkspaceService(store, tmp_path, draft_turn=lambda ws, *_: (
+        ws.state, PlanDraftResult("只改标题", ws.state.plan_markdown, (change,)),
+    ))
+    service.execute(command("edit_task", 1, task_id="read-001", activity_status="in_progress",
+                            understanding_status="self_reported_partial", text="已经掌握定义，需要再举一个例子。"))
+    before = store.load()
+    assert before.state.tasks[0].from_plan is False
+    draft = service.execute(command("draft", before.version, mode="adjust",
+                                    instructions="只把独立登记的任务改名为复习记录。"))
+    service.execute(command("decide", before.version, proposal_id=draft.proposal_id, decision="adopt"))
+    after = WorkspaceStore(store.path).load().state
+    assert after.tasks[0] == before.state.tasks[0].model_copy(update={"title": "复习记录"})
+    assert after.feedback_records == before.state.feedback_records
+    assert after.plan_markdown == before.state.plan_markdown
 
 
 def test_cli_explicit_entry_blocks_legacy_text_and_accepts_real_candidate(state, tmp_path, monkeypatch, capsys):

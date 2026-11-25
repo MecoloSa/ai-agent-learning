@@ -68,16 +68,23 @@ try {
     await call("Page.enable");
     await call("Emulation.setDeviceMetricsOverride", {width: 1280, height: 900, deviceScaleFactor: 1, mobile: false});
     await call("Page.navigate", {url});
-    await until(() => statusHas("计划修订 1"), "initial state");
-
-    await clickText("本地资料");
-    const bind = directory => evaluate(`document.querySelector('#editor input').value = ${JSON.stringify(directory)}; document.querySelector('#editor form').requestSubmit();`);
+    await until(() => evaluate("!document.querySelector('#setup-materials').hidden && !document.querySelector('.rail').hidden"), "default conversation without materials");
+    const bind = directory => evaluate(`document.querySelector('#setup-directory').value = ${JSON.stringify(directory)}; document.querySelector('#setup-materials').requestSubmit();`);
     await bind(join(output, "missing"));
-    await until(() => evaluate("document.querySelector('#editor-notice').classList.contains('error')"), "invalid directory");
+    await until(() => evaluate("document.querySelector('#setup-status').classList.contains('error')"), "invalid directory");
     await bind(join(output, "materials"));
+    await until(() => statusHas("计划修订 1"), "material binding preserves the existing plan");
+    await clickText("本地资料");
     await until(() => evaluate("document.querySelector('.material-list')?.textContent.includes('notes.md')"), "real local files listed");
     await evaluate("document.querySelector('#close-editor').click(); document.querySelector('#dismiss-notice').click()");
     if (!await evaluate("document.querySelector('#materials-status').textContent.includes('资料已关联')")) throw new Error("Missing bound material status");
+    if (!await evaluate("document.querySelector('#deep-mode').getAttribute('aria-checked') === 'false' && document.querySelector('#thinking-option').hidden")) throw new Error("Chat must default to fast mode");
+    await evaluate("document.querySelector('#deep-mode').click()");
+    if (!await evaluate("document.querySelector('#deep-mode').getAttribute('aria-checked') === 'true' && !document.querySelector('#thinking-option').hidden && document.querySelector('#worker-thinking').checked")) throw new Error("Deep mode must show thinking enabled by default");
+    await evaluate("window.scrollTo(0, 0)");
+    const modes = await call("Page.captureScreenshot", {format: "png"});
+    await writeFile(join(output, "workspace-chat-modes.png"), Buffer.from(modes.data, "base64"));
+    await evaluate("document.querySelector('#deep-mode').click()");
 
     await clickText("查看／反馈");
     if (!await evaluate("document.querySelector('#editor').matches(':modal') && document.querySelector('#notice').textContent === ''")) {
@@ -107,6 +114,9 @@ try {
     await fill("请先澄清我需要保留哪一项活动。");
     await until(() => evaluate("!document.querySelector('#editor-stream').hidden && document.querySelector('#editor-stream .stream-text')?.textContent.trim() === '请说明你希望'"), "live delta before completion");
     await until(() => evaluate("document.querySelector('#editor-notice').textContent.includes('保留哪项')"), "clarification");
+    if (!await evaluate("document.querySelector('#editor-notice').firstChild.textContent === '本轮未生成待确认候选。'")) {
+        throw new Error("Clarification must show the authoritative draft status");
+    }
     if (!await evaluate("document.querySelector('#editor').open && document.querySelector('#editor textarea').value.includes('请先澄清')")) {
         throw new Error("Clarification should retain the user's form");
     }
@@ -158,7 +168,18 @@ try {
     if (!await statusHas("已完成 1/2")) throw new Error("Feedback-only JSON should preserve activity progress");
     await call("Page.navigate", {url});
     await until(() => statusHas("计划修订 2"), "desktop screenshot state");
-    await evaluate("document.querySelector('#chat-input').value = '如何区分通用工具和专用工具？'; document.querySelector('#chat-form').requestSubmit();");
+    await evaluate(`window.sentModes = null;
+        const originalFetch = window.fetch;
+        window.fetch = (...args) => {
+            const body = args[1]?.body && JSON.parse(args[1].body);
+            if (body?.action === "chat") window.sentModes = body.payload;
+            return originalFetch(...args);
+        };
+        document.querySelector('#deep-mode').click();
+        document.querySelector('#worker-thinking').click();
+        document.querySelector('#chat-input').value = '如何区分通用工具和专用工具？';
+        document.querySelector('#chat-form').requestSubmit();`);
+    if (!await evaluate("window.sentModes?.deep_mode === true && window.sentModes?.worker_thinking === false")) throw new Error("Chat must send the selected mode and thinking state");
     if (!await evaluate("!document.querySelector('#pending-message').hidden && document.querySelector('#pending-message').textContent.includes('如何区分通用工具和专用工具？') && !document.querySelector('#chat-input').value")) throw new Error("Sent message should appear before the model returns");
     await until(() => evaluate("!document.querySelector('#stream-preview').hidden && document.querySelector('#stream-preview strong')?.textContent === '通用工具'"), "Markdown chat delta before completion");
     if (!await evaluate(`(() => {
@@ -212,8 +233,24 @@ try {
     await evaluate("document.querySelector('[data-inspector-target=inspector-tasks]').click()");
     if (!await evaluate("document.activeElement.id === 'inspector-tasks'")) throw new Error("Inspector navigation should focus the matching section");
     await evaluate("document.querySelector('#chat-input').value = '原始对话的草稿'; document.querySelector('#new-conversation').click()");
-    await until(() => evaluate("document.querySelector('#chat-title').textContent === '新对话' && document.querySelector('.conversation-link[aria-current=true]').textContent === '新对话'"), "new conversation");
-    if (!await evaluate("document.querySelector('#formal-plan').textContent.includes('尚未制定') && !document.querySelector('#tasks').textContent.includes('口头说明工具区别')")) throw new Error("New conversation should have an independent inspector");
+    await until(() => evaluate("!document.querySelector('#setup-materials').hidden && document.querySelector('.conversation').hidden && document.querySelector('.conversation-link[aria-current=true]').textContent === '新对话'"), "new conversation onboarding");
+    await evaluate("document.querySelector('#setup-directory').value='未保存的目录'");
+    await clickText("原始对话");
+    await until(() => evaluate("document.querySelector('#setup').hidden && document.querySelector('#chat-input').value === '原始对话的草稿'"), "switch away during setup");
+    await clickText("新对话");
+    await until(() => evaluate("!document.querySelector('#setup').hidden && document.querySelector('#setup-directory').value === '未保存的目录'"), "restore setup draft for this conversation");
+    if (!await evaluate(`(() => {
+        document.dispatchEvent(new KeyboardEvent("keydown", {key: "k", ctrlKey: true}));
+        return !document.querySelector("#search-dialog").open;
+    })()`)) throw new Error("The search shortcut must respect onboarding");
+    const setup = await call("Page.captureScreenshot", {format: "png"});
+    await writeFile(join(output, "workspace-onboarding.png"), Buffer.from(setup.data, "base64"));
+    await evaluate(`document.querySelector('#setup-directory').value = ${JSON.stringify(join(output, "materials"))}; document.querySelector('#setup-materials').requestSubmit()`);
+    await until(() => evaluate("!document.querySelector('#setup-plan').hidden && document.querySelector('.conversation').hidden"), "materials unlock only the plan form");
+    await evaluate("document.querySelector('#setup-instructions').value='参考资料生成第一份学习计划'; document.querySelector('#setup-plan').requestSubmit()");
+    await until(() => evaluate("!document.querySelector('#setup-candidate').hidden && document.querySelector('.conversation').hidden"), "candidate is visible before chat");
+    await clickText("采用计划并开始聊天");
+    await until(() => evaluate("document.querySelector('#setup').hidden && !document.querySelector('.conversation').hidden && document.querySelector('#chat-title').textContent === '新对话'"), "adoption unlocks chat");
     if (!await evaluate("!document.querySelector('#timeline').textContent.includes('专用工具适合约束') && !document.querySelector('#chat-input').value")) throw new Error("New conversation should not display original messages or drafts");
     await clickText("原始对话");
     await until(() => evaluate("document.querySelector('#chat-input').value === '原始对话的草稿'"), "switch restores original draft");
@@ -248,7 +285,10 @@ try {
     await evaluate("document.querySelector('.material-entry button').click()");
     await until(() => evaluate("document.querySelector('#editor-title').textContent === '移除资料文件'"), "file removal confirmation");
     await evaluate("document.querySelector('#editor form').requestSubmit()");
-    await until(() => evaluate("!document.querySelector('#editor').open && document.querySelector('#materials-status').textContent.includes('尚未关联')"), "file moved to recycle area");
+    await until(() => evaluate("!document.querySelector('#editor').open && !document.querySelector('#setup-materials').hidden"), "file removal opens the material guide for this conversation");
+    await writeFile(join(output, "materials", "replacement.md"), "后续学习资料。", "utf8");
+    await bind(join(output, "materials"));
+    await until(() => evaluate("document.querySelector('#setup').hidden && document.querySelector('#formal-plan').textContent.includes('复述要点')"), "rebinding preserves the existing plan");
     async function pointerClick(selector) {
         const {x, y} = await evaluate(`(() => {
             const node = document.querySelector(${JSON.stringify(selector)});

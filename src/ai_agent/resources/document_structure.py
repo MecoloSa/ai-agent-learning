@@ -344,5 +344,5 @@ def build_inspect_document_structure_tool(root_dir: str, *, model_factory=None, 
         func=inspect, name="inspect_document_structure", args_schema=StructureInput,
         description="识别指定 PDF/MD/TXT 的文章结构，返回原文位置及读取范围。短文直接返回全文。"
                     "逐章概览、了解全文组织或安排章节阅读时使用；relative_path 是资料目录内的相对路径。"
-                    "PDF 回读使用 start_physical_page 或 start.page 作为 read_pdf_pages 的 start_page。",
+                    "核对 PDF 章节起点时，用 start_physical_page 或 start.page 作为 read_pdf_pages 的起止页，再按需补读。",
     )

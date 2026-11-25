@@ -25,6 +25,7 @@ class TurnSourceLedger:
             "read_material_lines", "read_learning_file", "read_pdf_pages",
             "retrieve_learning_context",
             "inspect_document_structure",
+            "delegate_learning_task",
         }:
             return
         try:
@@ -36,6 +37,12 @@ class TurnSourceLedger:
             return
         data = payload.get("data")
         if not isinstance(data, dict):
+            return
+
+        if tool_name == "delegate_learning_task":
+            for source in data.get("evidence_catalog", {}).values():
+                notes = ["该位置仅返回部分文字"] if source.get("partial") is True else []
+                self._add(source.get("citation"), notes)
             return
 
         if tool_name == "inspect_document_structure":

@@ -1,8 +1,30 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from langchain_core.documents import Document
 
 from ai_agent.retrieval.rag import LearningRAG
+
+
+def test_retrieve_many_uses_explicit_strategy_and_rerank_over_global_defaults(monkeypatch):
+    monkeypatch.setattr("ai_agent.retrieval.rag.get_settings", lambda: SimpleNamespace(
+        rag_retrieval_strategy="hybrid", rag_rerank_enabled=False,
+    ))
+    rag = object.__new__(LearningRAG)
+    calls = []
+
+    def retrieve(**kwargs):
+        calls.append(kwargs)
+        return []
+
+    rag.retrieve_with_strategy = retrieve
+    options = dict(k_per_query=1, max_hits=1, min_relevance=0.35, relative_margin=0.12, min_hits=1)
+    rag.retrieve_many((("question", "工具调用"),), strategy="dense", rerank=True, **options)
+    rag.retrieve_many((("question", "工具调用"),), **options)
+
+    assert (calls[0]["strategy"], calls[0]["rerank"]) == ("dense", True)
+    assert "strategy" not in calls[1] and calls[1]["rerank"] is False
 
 
 class FakeStore:
@@ -19,6 +41,30 @@ def make_rag(candidates) -> LearningRAG:
     rag.store = FakeStore(candidates)
     rag.sync = lambda: None
     return rag
+
+
+def test_source_scope_applies_to_dense_and_hybrid_candidates_before_reranking():
+    allowed = Document(page_content="范围内", metadata={"source": "a.pdf", "page": 1, "chunk_index": 0})
+    excluded = Document(page_content="范围外", metadata={"source": "b.pdf", "page": 1, "chunk_index": 0})
+    rag = make_rag([])
+
+    class ScopedStore:
+        def similarity_search_with_relevance_scores(self, query, k, filter):
+            assert filter == {"source": {"$in": ["a.pdf"]}}
+            return [(allowed, 0.9)]
+
+    class LexicalIndex:
+        documents = [excluded, allowed]
+
+        def search(self, query, k):
+            return self.documents
+
+    rag.store = ScopedStore()
+    rag._get_lexical_index = LexicalIndex
+    scope = frozenset({"a.pdf"})
+    assert [hit.metadata["source"] for hit in rag.retrieve("证据", source_paths=scope)] == ["a.pdf"]
+    assert [hit.metadata["source"] for hit in rag.retrieve_hybrid_candidates("证据", source_paths=scope)] == ["a.pdf"]
+    assert rag.retrieve_with_strategy("证据", source_paths=frozenset()) == []
 
 
 def test_retrieve_applies_absolute_and_softened_relative_threshold():

@@ -7,6 +7,7 @@ import json
 import logging
 import math
 from pathlib import Path
+from threading import Lock
 import time
 
 from langchain_chroma import Chroma
@@ -21,6 +22,7 @@ from ai_agent.retrieval.lexical_retrieval import CharBigramBM25
 from ai_agent.retrieval.retrieval_fusion import fuse_rrf_candidates
 
 logger = logging.getLogger("ai_agent.rag")
+_chroma_init_lock = Lock()
 
 class RAGError(RuntimeError):
     """PDF解析、索引构建或检索失败。"""
@@ -346,15 +348,15 @@ class LearningRAG:
         self._lexical_index: CharBigramBM25 | None = None
         # 向量库持久化到磁盘 sha/chroma
         # 只有文档和问题使用相同的向量模型，它们才能在同一向量空间中比较相似度
-        self.store = Chroma(
-            collection_name=f"learning_{corpus_id}",            # 类似数据库表名
-            embedding_function=create_embeddings(),             # 返回 Embedding 模型对象
-            persist_directory=str(self.persist_dir / "chroma"),
-            # 明确使用余弦距离，便于解释相关性分数。
-            collection_metadata={
-                "hnsw:space": "cosine",
-            },
-        )
+        embedding = create_embeddings()
+        # Chroma 在进程内共享客户端状态。只串行化构造，向量检索和重排仍可并发。
+        with _chroma_init_lock:
+            self.store = Chroma(
+                collection_name=f"learning_{corpus_id}",
+                embedding_function=embedding,
+                persist_directory=str(self.persist_dir / "chroma"),
+                collection_metadata={"hnsw:space": "cosine"},
+            )
 
         self.splitter = RecursiveCharacterTextSplitter(
             chunk_size=settings.rag_chunk_size,
@@ -703,6 +705,7 @@ class LearningRAG:
         branch_limit: int = 32,
         candidate_limit: int = 16,
         exclude_suffixes: set[str] | None = None,
+        source_paths: frozenset[str] | None = None,
     ) -> list[Document]:
         """两路召回并融合候选；不是最终证据，不替换默认 retrieve。"""
         if branch_limit < 1 or candidate_limit < 1:
@@ -725,11 +728,13 @@ class LearningRAG:
         raw = self.store.similarity_search_with_relevance_scores(
             query=query,
             k=fetch_k,
+            **({"filter": {"source": {"$in": sorted(source_paths)}}} if source_paths is not None else {}),
         )
         dense = [
             (doc, score)
             for doc, score in raw
-            if Path(
+            if (source_paths is None or doc.metadata.get("source") in source_paths)
+            and Path(
                 str(doc.metadata.get("source", ""))
             ).suffix.lower() not in excluded
         ][:branch_limit]
@@ -742,7 +747,8 @@ class LearningRAG:
                 query,
                 k=max(1, len(index.documents)),
             )
-            if Path(
+            if (source_paths is None or doc.metadata.get("source") in source_paths)
+            and Path(
                 str(doc.metadata.get("source", ""))
             ).suffix.lower() not in excluded
         ][:branch_limit]
@@ -779,6 +785,7 @@ class LearningRAG:
             exclude_suffixes: set[str] | None = None,
             candidate_audit: list[dict[str, object]] | None = None,
             rerank: bool = False,
+            source_paths: frozenset[str] | None = None,
     ) -> list[Document]:
         """"执行带阈值的相似度检索。
 
@@ -840,6 +847,7 @@ class LearningRAG:
         raw_candidates = self.store.similarity_search_with_relevance_scores(
             query=query,
             k=fetch_k,
+            **({"filter": {"source": {"$in": sorted(source_paths)}}} if source_paths is not None else {}),
         )
 
         audit_by_identity: dict[int, dict[str, object]] = {}
@@ -869,7 +877,8 @@ class LearningRAG:
         candidates = [
             (document, score)
             for document, score in raw_candidates
-            if Path(
+            if (source_paths is None or document.metadata.get("source") in source_paths)
+            and Path(
                 str(document.metadata.get("source", ""))
             ).suffix.lower() not in normalized_excluded
         ]
@@ -1137,6 +1146,7 @@ class LearningRAG:
         exclude_suffixes: set[str] | None = None,
         rerank: bool = False,
         strategy: str | None = None,
+        source_paths: frozenset[str] | None = None,
     ) -> list[Document]:
         """业务策略入口；旧 retrieve 保持向量基线与原审计口径。"""
         settings = get_settings()
@@ -1149,6 +1159,9 @@ class LearningRAG:
             raise ValueError("检索策略必须为 dense 或 hybrid")
         if k < 1:
             raise ValueError("k 必须大于 0")
+        if source_paths == frozenset():
+            return []
+        scope = {} if source_paths is None else {"source_paths": source_paths}
 
         dense_args = dict(
             query=query,
@@ -1157,6 +1170,7 @@ class LearningRAG:
             relative_margin=relative_margin,
             min_hits=min_hits,
             exclude_suffixes=exclude_suffixes,
+            **scope,
         )
 
         if mode == "dense":
@@ -1184,6 +1198,7 @@ class LearningRAG:
                 query,
                 candidate_limit=settings.rag_rerank_candidate_limit,
                 exclude_suffixes=exclude_suffixes,
+                **scope,
             )
             if not candidates:
                 logger.debug("混合检索无候选：returned=0")
@@ -1306,6 +1321,9 @@ class LearningRAG:
             relative_margin: float,
             min_hits: int,
             exclude_suffixes: set[str] | None = None,
+            source_paths: frozenset[str] | None = None,
+            strategy: str | None = None,
+            rerank: bool | None = None,
     ) -> list[Document]:
         """对传入的任意数量查询分别检索，再轮询合并结果。
 
@@ -1328,7 +1346,9 @@ class LearningRAG:
                 relative_margin=relative_margin,
                 min_hits=min_hits,
                 exclude_suffixes=exclude_suffixes,
-                rerank=get_settings().rag_rerank_enabled,
+                rerank=get_settings().rag_rerank_enabled if rerank is None else rerank,
+                **({"strategy": strategy} if strategy is not None else {}),
+                **({"source_paths": source_paths} if source_paths is not None else {}),
             )
 
             # matched_queries 只用于本次内存中的上下文解释，不写回 Chroma。
@@ -1413,6 +1433,7 @@ class LearningRAG:
         separator = "\n\n---\n\n"
         sections: list[str] = []
         selected_sources: list[dict[str, str]] = []
+        selected_locations: list[dict] = []
         used_chars = 0
 
         for document in documents:
@@ -1486,6 +1507,9 @@ class LearningRAG:
                 selected_sources.append({
                     "citation": f"[{', '.join(location_parts)}]",
                 })
+                selected_locations.append({key: metadata[key] for key in ("source", "page", "chunk_index")
+                                           if key in metadata})
+                selected_locations[-1]["text"] = document.page_content.strip()
 
         logger.debug(
             "检索上下文格式化完成 documents=%s used_chars=%s max_chars=%s",
@@ -1502,6 +1526,7 @@ class LearningRAG:
                 "selected_chars": used_chars,
                 "max_chars": max_context_chars,
                 "selected_sources": selected_sources,
+                "selected_locations": selected_locations,
             })
 
         # 保留项目现有证据块分隔符。

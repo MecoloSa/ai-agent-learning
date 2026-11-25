@@ -215,21 +215,31 @@ def test_workspace_main_agent_can_read_short_article_through_structure_tool(tmp_
     monkeypatch.setattr(app, "create_llm", lambda: object())
     monkeypatch.setattr(app, "create_llm_with_tools", lambda _: object())
     messages_seen = []
+    activity = []
 
-    def respond(llm, messages, *, stage):
+    def respond(llm, messages, *, stage, **kwargs):
         messages_seen.append(messages)
         if len(messages_seen) == 1:
             return AIMessage(content="", tool_calls=[{
                 "name": "inspect_document_structure", "id": "structure",
                 "args": {"relative_path": "article.md"},
+            }, {
+                "name": "read_pdf_pages", "id": "wide-range",
+                "args": {"relative_path": "book.pdf", "start_page": 8, "end_page": 12},
             }])
         assert any("独有事实3617" in str(item.content) for item in messages)
+        assert any("pdf_page_range_limit" in str(item.content) for item in messages)
         return AIMessage(content="文章包含定义与末节，末节的事实编号是3617。")
 
     monkeypatch.setattr(app, "invoke_llm_response", respond)
     event = WorkspaceService(store, tmp_path).execute(WorkspaceCommand(
         action="chat", request_id=uuid4().hex, version=1,
         payload={"text": "请按原文顺序列出文章所有章节，并解释每章讲了什么。"},
-    ))
+    ), stream_observer=lambda kind, data: activity.append(data) if kind == "tool_activity" else None)
     assert "3617" in event.message and "程序整理的本轮读取来源" in event.message
+    assert [(row["name"], row["status"]) for row in activity] == [
+        ("inspect_document_structure", "running"), ("inspect_document_structure", "completed"),
+        ("read_pdf_pages", "running"), ("read_pdf_pages", "failed"),
+    ]
+    assert activity[-1]["reason"] == "请求页数超过单次上限，请缩小范围。"
     assert len(messages_seen) == 2 and store.load().version == 1

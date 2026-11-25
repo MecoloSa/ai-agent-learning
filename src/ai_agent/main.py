@@ -10,7 +10,7 @@ import re
 from sqlite3 import Error as SQLiteError
 from datetime import date
 from pathlib import Path
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from copy import deepcopy
 from pydantic import ValidationError
 
@@ -152,6 +152,7 @@ def _build_interactive_system_prompt(
     retrieval_available: bool,
     on_demand_eligible: bool = False,
     plan_only: bool = False,
+    allow_plan_proposals: bool = True,
 ) -> str:
     """构造职责规则及现有分析、资料证据上下文。
 
@@ -225,6 +226,15 @@ def _build_interactive_system_prompt(
     goal_change_rule = "" if plan_only else (
         f"目标修改仍将完整候选放在{GOAL_START_TAG}与{GOAL_END_TAG}之间，最多一组且不嵌套。"
     )
+    plan_rules = (
+        "【目标与计划修改】\n"
+        "只有用户明确要求修改时才提交完整候选；解释或讨论不提交。"
+        "完整计划调用propose_plan_change提交；工具只登记pending，确认与保存由程序负责。"
+        f"{goal_change_rule}"
+        "不代替用户确认，不宣称已更新或保存。\n\n"
+        if allow_plan_proposals else
+        "可以讨论学习安排并给出调整建议。用户要提交待确认候选时，引导其使用“调整计划”。\n\n"
+    )
     # 规则按职责组织；案例和具体业务数值应留在用户数据或评测用例中。
     # 动态评估：核对工具选择、候选确认、历史查询与引用，不只比较字符数。
     return (
@@ -247,6 +257,8 @@ def _build_interactive_system_prompt(
         "原文须支持相邻论断；概览和历史引用不能代替正文核对，未召回不等于资料不存在。"
 
         "只获取当前需要的信息，复用已有结果。\n"
+        "用户想核对资料原话时，提供少量关键原句和已核实的位置。"
+        "整页、整节等大段原文请求也按短摘录和位置交付。\n"
         "【学习状态】\n"
         "当前学习计划正文表示已确认的安排，tasks表示登记任务的进度、理解和取消状态；"
         "不能用登记任务表代替当前计划概括。任务已登记不代表今天执行，也不代表仍待确认。"
@@ -269,11 +281,7 @@ def _build_interactive_system_prompt(
         "候选不是正式记录；操作是否采用及其原因以对应程序回执为准，没有回执就说明无法核实。"
         "不复制或自行生成程序回执标记，使用普通语言说明结果。\n"
         f"{LEARNING_TIME_RULES}"
-        "【目标与计划修改】\n"
-        "只有用户明确要求修改时才提交完整候选；解释或讨论不提交。"
-        "完整计划调用propose_plan_change提交；工具只登记pending，确认与保存由程序负责。"
-        f"{goal_change_rule}"
-        "不代替用户确认，不宣称已更新或保存。\n\n"
+        f"{plan_rules}"
         f"资料分析结果：\n{analysis}\n\n"
         f"资料证据区（策略={evidence_mode}）：\n{material_evidence}\n"
     )
@@ -751,6 +759,11 @@ def _invoke_interactive_turn(
     history_read_attempts = {}
     no_progress_calls = 0
     no_progress_limit = settings.interactive_max_no_progress_calls
+    initial_routing_hint = None
+    if "delegate_learning_task" in tools_by_name:
+        from ai_agent.runtime.task_delegation import DELEGATION_ROUTING_HINT
+
+        initial_routing_hint = DELEGATION_ROUTING_HINT
 
     # 动态评估：新用户轮次应出现used=0；结合后续工具结果日志定位限制。
     logger.debug(
@@ -763,6 +776,15 @@ def _invoke_interactive_turn(
         notice = budget_notice(call_limit - used_calls)
         # 只在临近总预算时提示；不写回历史，也不改变执行额度。
         decision_messages = [*messages, HumanMessage(content=notice)] if notice else messages
+        if initial_routing_hint is not None:
+            # 请求副本中的临时规则，不进入后续工具轮或持久化会话。
+            first = decision_messages[0]
+            if isinstance(first, SystemMessage) and isinstance(first.content, str):
+                first = first.model_copy(update={"content": f"{first.content}\n\n{initial_routing_hint}"})
+                decision_messages = [first, *decision_messages[1:]]
+            else:
+                decision_messages = [SystemMessage(content=initial_routing_hint), *decision_messages]
+            initial_routing_hint = None
         response = call_model(
             tool_llm,
             decision_messages,
@@ -1010,9 +1032,12 @@ def _invoke_interactive_turn(
             )
             source_ledger.observe(name, result, executed=executed)
             if stream_observer is not None and (executed or result_reused):
+                pdf_reason = (execution_failure_reason(name, result)
+                              if name == "read_pdf_pages" and not execution_succeeded else None)
                 stream_observer("tool_activity", {
                     "id": call["id"], "name": name,
                     "status": ("reused" if result_reused else "completed" if execution_succeeded else "failed"),
+                    **({"reason": pdf_reason} if pdf_reason else {}),
                 })
 
             if audit_trace is not None:
@@ -1668,6 +1693,14 @@ def _run_interactive_session(
         active_extra_tools = extra_tools
         active_feedback = feedback_inbox
         model_input = user_input
+        if plan_request is None and settings.interactive_task_delegation_enabled:
+            from ai_agent.runtime.task_delegation import build_learning_delegation_tool
+
+            delegation = build_learning_delegation_tool(
+                material_dir, user_input, main_plans=settings.interactive_main_plans_delegation,
+            )
+            active_extra_tools = (*extra_tools, delegation)
+            active_llm = create_llm_with_tools([*interactive_tools, delegation])
         if plan_request is not None:
             if plan_tool_llm is None:
                 plan_tool_llm = create_llm_with_tools([

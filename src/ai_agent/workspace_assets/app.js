@@ -8,6 +8,21 @@ const understanding = {unknown: "未填写", self_reported_unclear: "还没理�
 const statuses = {pending: "待确认", adopted: "已采用", rejected: "已拒绝", stale: "已失效"};
 let view;
 let busy = false;
+let deepMode = false;
+
+function renderChatMode() {
+    const available = Boolean(view?.deep_mode_available);
+    const active = available && deepMode;
+    const button = byId("deep-mode");
+    button.disabled = !available;
+    button.setAttribute("aria-checked", String(active));
+    byId("chat-mode-label").textContent = active ? "深入模式" : "快速模式";
+    byId("thinking-option").hidden = !active;
+    const description = available ? "深入模式可按需由多智能体协作。"
+        : view?.materials?.available ? "工作区已禁用多智能体委派。" : "关联本地资料后可开启深入模式。";
+    byId("chat-modes").title = description;
+    byId("chat-mode-help").textContent = description;
+}
 let chatStreaming = false;
 const waitingForReply = "回复生成中，完成后可提交。";
 let retry;
@@ -16,12 +31,20 @@ let activeView = "all";
 let searchQuery = "";
 let conversationId = sessionStorage.getItem("workspace-conversation") || null;
 const conversationDrafts = new Map();
+const setupDrafts = new Map();
 
 function selectConversation(id) {
+    if (id === conversationId) return;
     const input = byId("chat-input");
+    const directory = byId("setup-directory");
+    const instructions = byId("setup-instructions");
     conversationDrafts.set(conversationId, input.value);
+    setupDrafts.set(conversationId, {directory: directory.value, instructions: instructions.value});
     conversationId = id;
     input.value = conversationDrafts.get(id) || "";
+    directory.value = setupDrafts.get(id)?.directory || "";
+    instructions.value = setupDrafts.get(id)?.instructions || "";
+    byId("setup-status").textContent = "";
     if (id) sessionStorage.setItem("workspace-conversation", id);
     else sessionStorage.removeItem("workspace-conversation");
     searchQuery = "";
@@ -77,6 +100,8 @@ function renderConversations() {
         });
         for (const [mode, label] of [["rename_conversation", "重命名"], ["json_edit", "编辑受控 JSON"], ["export", "导出学习状态 JSON"],
             ["clear_history", "清空聊天历史"], ["delete_conversation", "删除对话"]]) {
+            if (session.id === conversationId && view.setup_stage !== "ready" &&
+                !["rename_conversation", "delete_conversation"].includes(mode)) continue;
             actions.append(button(label, async () => {
                 actions.hidePopover();
                 if (mode === "export") {
@@ -116,12 +141,22 @@ function button(text, action, primary = false) {
     return node;
 }
 
-function notice(text, error = false) {
+function notice(text, error = false, draftExplanation = "") {
     const dialog = byId("editor").open;
+    if (!byId("setup").hidden && !dialog) {
+        const target = byId("setup-status");
+        target.textContent = text;
+        if (draftExplanation) target.append(readableText(draftExplanation));
+        target.classList.toggle("error", error);
+        return;
+    }
     byId("notice").textContent = dialog ? "" : text;
     byId("notice-bar").hidden = dialog || !text;
     const target = byId(dialog ? "editor-notice" : "notice");
     target.textContent = text;
+    if (dialog && draftExplanation) {
+        target.append(element("p", "本轮起草说明", "section-label"), readableText(draftExplanation));
+    }
     target.classList.toggle("error", error);
 }
 
@@ -146,6 +181,7 @@ function selectView(name) {
         tasks: "查看任务登记、进度和理解反馈的记录。",
     }[name];
     document.querySelector(".composer").hidden = name !== "all";
+    byId("chat-modes").hidden = name !== "all";
     if (chatStreaming) {
         byId("pending-message").hidden = name !== "all" || Boolean(searchQuery);
         if (byId("stream-preview").childElementCount) byId("stream-preview").hidden = byId("pending-message").hidden;
@@ -271,7 +307,8 @@ async function readAction(response, preview) {
                         tools.append(row);
                     }
                     const status = {running: "执行中", completed: "已完成", failed: "执行失败", reused: "复用结果"};
-                    row.textContent = `${data.name} · ${status[data.status]}`;
+                    const toolLabel = data.name === "delegate_learning_task" ? "协作查阅资料" : data.name;
+                    row.textContent = `${toolLabel} · ${status[data.status]}${data.reason ? ` · ${data.reason}` : ""}`;
                     tools.hidden = false;
                     updatePreview();
                 } else if (type === "delta") {
@@ -301,15 +338,15 @@ async function send(action, payload, expectedVersion = view?.version) {
     const submittingEditor = byId("editor").open && !chatStreaming;
     if (submittingEditor) byId("editor").setAttribute("aria-busy", "true");
     const submitters = Array.from(document.querySelectorAll(
-        '#chat-form button[type="submit"], #editor button[type="submit"]'
+        '#chat-form button[type="submit"], #editor button[type="submit"], .setup form button, #setup-candidate button'
     ));
     submitters.forEach(node => { node.disabled = true; });
     const streaming = action === "chat" || action === "draft";
-    const preview = byId(action === "draft" ? "editor-stream" : "stream-preview");
+    const preview = byId(action === "draft" ? (view.setup_stage === "plan" ? "setup-stream" : "editor-stream") : "stream-preview");
     byId("close-editor").disabled = submittingEditor;
     if (chatStreaming) setChatWriteControls(true);
     byId("composer-status").textContent = streaming ? "正在生成回复…" : "正在保存…";
-    notice(byId("editor").open ? (streaming ? "正在准备方案…" : "正在保存…") : "");
+    notice(byId("editor").open || !byId("setup").hidden ? (streaming ? "正在准备方案…" : "正在保存…") : "");
     try {
         const response = await fetch("/api/action", {method: "POST",
             headers: {...auth, "Content-Type": "application/json",
@@ -350,8 +387,15 @@ async function send(action, payload, expectedVersion = view?.version) {
             if (title) void watchConversationTitle(targetConversation, title);
         }
         if (submittingEditor && byId("editor").open && body.event.status !== "not_submitted" && action !== "bind_materials") byId("editor").close();
-        notice(body.event.status === "pending" ? "方案已保存为待确认候选。" :
-            (action === "chat" ? "" : body.event.message));
+        if (action === "draft") {
+            // 只用程序回执显示候选状态，模型说明仍留给用户继续阅读或补充。
+            const hasCandidate = body.event.status === "pending" && Boolean(body.event.proposal_id);
+            notice(hasCandidate ? "方案已保存为待确认候选。" : "本轮未生成待确认候选。",
+                false, hasCandidate ? "" : body.event.message);
+        } else {
+            notice(body.event.status === "pending" ? "方案已保存为待确认候选。" :
+                (action === "chat" ? "" : body.event.message));
+        }
         if (chatStreaming) {
             preview.hidden = true;
             if (followReply) showLatestReply();
@@ -374,10 +418,54 @@ async function send(action, payload, expectedVersion = view?.version) {
     }
 }
 
+function renderSetup(workspace) {
+    const stage = workspace.setup_stage;
+    const ready = stage === "ready";
+    byId("setup").hidden = ready;
+    document.querySelector(".conversation").hidden = !ready;
+    document.querySelector(".inspector").hidden = !ready;
+    byId("open-search").disabled = !ready;
+    if (ready) return;
+
+    const needsMaterials = stage === "materials";
+    const candidate = needsMaterials ? null : workspace.proposals.findLast(item => item.mode === "replace" && item.status === "pending");
+    byId("setup-step").textContent = needsMaterials && !workspace.needs_initial_plan ? "学习资料"
+        : needsMaterials ? "第 1 步 / 2 · 学习资料" : "第 2 步 / 2 · 学习计划";
+    byId("setup-title").textContent = needsMaterials ? "关联上你的资料吧！"
+        : candidate ? "确认你的第一份学习计划" : "制定你的第一份学习计划";
+    byId("setup-description").textContent = needsMaterials ? "把书籍、讲义或笔记放进一个本地文件夹，研习台会从这里读取资料。"
+        : candidate ? "核对计划内容，采用后就可以开始学习对话。" : "写下学习目标、时间和已有基础，我会参考已关联的资料起草计划。";
+    byId("setup-materials").hidden = !needsMaterials;
+    byId("setup-plan").hidden = needsMaterials || Boolean(candidate);
+    const preview = byId("setup-candidate");
+    preview.hidden = !candidate;
+    preview.replaceChildren();
+    if (candidate) {
+        const controls = element("div", "", "actions");
+        controls.append(
+            button("修改要求", async () => {
+                const event = await send("decide", {proposal_id: candidate.id, decision: "reject"});
+                if (event) {
+                    byId("setup-instructions").value = candidate.instructions;
+                    byId("setup-instructions").focus();
+                    notice("可以修改原有要求，再生成一份计划。");
+                }
+            }),
+            button("采用计划并开始聊天", () => send("decide", {proposal_id: candidate.id, decision: "adopt"}), true),
+        );
+        preview.append(readableText(candidate.markdown), controls);
+    }
+}
+
 function render(workspace) {
+    const finishingSetup = view?.conversation_id === workspace.conversation_id &&
+        view.setup_stage !== "ready" && workspace.setup_stage === "ready";
     view = workspace;
     if (workspace.conversation_id !== conversationId) selectConversation(workspace.conversation_id);
+    renderSetup(workspace);
     renderConversations();
+    if (workspace.setup_stage !== "ready") return;
+    if (finishingSetup) selectView("all");
     if (activeView === "all") {
         byId("chat-title").textContent = workspace.conversations.find(item => item.id === conversationId)?.title ?? "学习对话";
     }
@@ -395,6 +483,7 @@ function render(workspace) {
     byId("status").textContent = `计划修订 ${state.context_revision} · 已完成 ${completed}/${active.length} 项登记任务 · ${pending} 份待确认`;
     byId("review-note").textContent = state.tasks_need_review ? "计划已调整，请核对登记任务与新安排的关系。" : "";
     const materials = workspace.materials;
+    renderChatMode();
     byId("materials-status").textContent = materials.folder
         ? `${materials.available ? "资料已关联" : "目录不可用"} · ${materials.folder}`
         : "尚未关联资料";
@@ -476,7 +565,7 @@ function renderTimeline() {
             card.append(element("div", "你", "speaker user-speaker"), message,
                 element("div", "研习助手", "speaker"));
         } else if (event.input_text) card.append(element("p", event.input_text, "muted"));
-        if (event.status === "not_submitted") card.append(element("h3", "需要补充信息"));
+        if (event.status === "not_submitted") card.append(element("h3", "本轮未生成待确认候选"));
         if (candidate && event.action !== "decide") {
             card.append(candidateCard(candidate));
             if (event.message && !["extract_tasks", "split_task"].includes(candidate.mode)) {
@@ -484,7 +573,10 @@ function renderTimeline() {
                 details.append(element("summary", "查看本轮说明与来源"), readableText(event.message));
                 card.append(details);
             }
-        } else if (event.message) card.append(readableText(event.message));
+        } else if (event.message) {
+            if (event.status === "not_submitted") card.append(element("p", "本轮起草说明", "section-label"));
+            card.append(readableText(event.message));
+        }
         timeline.append(card);
     }
     if (query && activeView === "all") {
@@ -659,6 +751,7 @@ async function showMaterialCatalog(target, offset = 0) {
 
 function openEditor(mode, taskId = null) {
     if (!view || (busy && !(chatStreaming && mode === "feedback"))) return;
+    if (view.setup_stage !== "ready" && !["rename_conversation", "delete_conversation"].includes(mode)) return;
     const key = `${mode}:${taskId ?? ""}`;
     const editor = byId("editor");
     if (editorKey === key && editor.open) return;
@@ -877,7 +970,7 @@ byId("dismiss-notice").addEventListener("click", () => notice(""));
 document.querySelectorAll("[data-mode]").forEach(node => node.addEventListener("click", () => openEditor(node.dataset.mode)));
 document.querySelectorAll("[data-view]").forEach(node => node.addEventListener("click", () => selectView(node.dataset.view)));
 function openSearch() {
-    if (!view || byId("editor").open || byId("search-dialog").open) return;
+    if (view?.setup_stage !== "ready" || byId("editor").open || byId("search-dialog").open) return;
     const input = byId("timeline-search");
     input.value = searchQuery;
     byId("search-dialog").showModal();
@@ -900,7 +993,7 @@ byId("clear-search").addEventListener("click", () => {
 });
 document.addEventListener("keydown", event => {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k" && !event.isComposing) {
-        if (byId("editor").open) return;
+        if (view?.setup_stage !== "ready" || byId("editor").open) return;
         event.preventDefault();
         openSearch();
     }
@@ -929,6 +1022,24 @@ byId("chat-input").addEventListener("keydown", event => {
         byId("chat-form").requestSubmit();
     }
 });
+byId("deep-mode").addEventListener("click", () => {
+    deepMode = !deepMode;
+    renderChatMode();
+});
+byId("setup-materials").addEventListener("submit", async event => {
+    event.preventDefault();
+    const directory = byId("setup-directory").value.trim().replace(/^"(.*)"$/, "$1");
+    const saved = await send("bind_materials", {directory});
+    if (saved && view?.setup_stage === "plan") {
+        byId("setup-instructions").focus();
+        notice("");
+    }
+});
+byId("setup-plan").addEventListener("submit", event => {
+    event.preventDefault();
+    const instructions = byId("setup-instructions").value.trim();
+    if (instructions) void send("draft", {mode: "replace", instructions});
+});
 byId("chat-form").addEventListener("submit", async event => {
     event.preventDefault();
     if (busy || !view) return;
@@ -946,7 +1057,11 @@ byId("chat-form").addEventListener("submit", async event => {
     pending.hidden = Boolean(searchQuery);
     input.value = "";
     if (follow && !pending.hidden) showLatestReply();
-    const result = await send("chat", {text: original});
+    const result = await send("chat", {
+        text: original,
+        deep_mode: deepMode && view.deep_mode_available,
+        worker_thinking: byId("worker-thinking").checked,
+    });
     pending.hidden = true;
     if (!result && !input.value) input.value = original;
     if (!result && input.value !== original) {

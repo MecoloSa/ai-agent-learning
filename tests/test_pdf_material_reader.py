@@ -5,11 +5,14 @@
 不调用LLM，不写入真实学习状态。
 """
 
+import json
 from types import SimpleNamespace
 
 import pytest
 
 import ai_agent.resources.pdf_materials as pdf_module
+from ai_agent.resources.tools import build_read_pdf_pages_tool
+from ai_agent.runtime.execution_guard import execution_failure_reason, tool_result_succeeded
 
 
 def mock_pdf(monkeypatch, tmp_path, texts, *, encrypted=False):
@@ -41,6 +44,21 @@ def mock_pdf(monkeypatch, tmp_path, texts, *, encrypted=False):
         lambda *args, **kwargs: reader,
     )
     return extracted_pages
+
+
+def test_out_of_bounds_receipt_is_a_failure_and_extracts_no_text(monkeypatch, tmp_path):
+    pages = mock_pdf(monkeypatch, tmp_path, ["第一页", "第二页"])
+    tool = build_read_pdf_pages_tool(str(tmp_path))
+    raw = tool.invoke({"relative_path": "book.pdf", "start_page": 5, "end_page": 5})
+    assert json.loads(raw) == {
+        "ok": False,
+        "error": {"code": "pdf_page_out_of_bounds", "message": "起始页超出PDF范围",
+                  "requested_start_page": 5, "total_pages": 2, "retryable": False},
+    }
+    assert not tool_result_succeeded("read_pdf_pages", raw)
+    assert pages == []
+    assert json.loads(tool.invoke({"relative_path": "book.pdf", "start_page": 2, "end_page": 2}))["ok"]
+    assert pages == [2]
 
 
 def test_reads_only_requested_physical_pages(monkeypatch, tmp_path):
@@ -182,3 +200,14 @@ def test_rejects_unparseable_pdf(monkeypatch, tmp_path):
         pdf_module.read_pdf_pages(
             str(tmp_path), "broken.pdf", 1, 1,
         )
+
+
+def test_pdf_tool_returns_actionable_range_rejection(tmp_path):
+    reader = build_read_pdf_pages_tool(str(tmp_path))
+    result = reader.invoke({"relative_path": "book.pdf", "start_page": 8, "end_page": 12})
+    error = json.loads(result)["error"]
+    assert error["code"] == "pdf_page_range_limit"
+    assert (error["requested_start_page"], error["requested_end_page"], error["max_pages"]) == (8, 12, 3)
+    assert error["retryable"] is False
+    assert not tool_result_succeeded("read_pdf_pages", result)
+    assert execution_failure_reason("read_pdf_pages", result) == "请求页数超过单次上限，请缩小范围。"

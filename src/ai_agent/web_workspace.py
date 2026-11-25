@@ -174,7 +174,7 @@ def create_server(service: WorkspaceService, port: int = 0) -> ThreadingHTTPServ
                     self.streaming = True
                     observer = self._stream_event
                     observer("phase", "已收到请求，正在准备上下文")
-                event = service.execute(command, stream_observer=observer)
+                event = service.execute(command, stream_observer=observer, enforce_setup=True)
                 selected = command.conversation_id
                 if command.action == "new_conversation":
                     selected = event.conversation_id

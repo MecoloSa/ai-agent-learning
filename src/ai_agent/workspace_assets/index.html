@@ -13,19 +13,47 @@
   <div class="layout">
     <nav class="rail" aria-label="工作区导航">
       <div class="brand"><span class="brand-mark" aria-hidden="true">学</span><div>研习台<small>你的本地学习工作区</small></div></div>
-      <button class="nav-button" id="open-search" type="button" aria-haspopup="dialog"><span class="nav-icon" aria-hidden="true">⌕</span>搜索记录 <kbd>Ctrl K</kbd></button>
+      <button class="nav-button" id="open-search" type="button" aria-haspopup="dialog" disabled><span class="nav-icon" aria-hidden="true">⌕</span>搜索记录 <kbd>Ctrl K</kbd></button>
       <section class="conversations-nav" aria-label="对话历史">
         <div class="conversation-heading"><span>对话历史</span><button id="new-conversation" type="button" aria-label="新建对话" title="新建对话">＋</button></div>
         <div id="conversation-list"></div>
       </section>
       <div class="local-label">● 本地 SQLite</div>
     </nav>
-    <main class="conversation">
+  <main id="setup" class="setup">
+    <section class="setup-card" aria-labelledby="setup-title">
+      <div class="setup-illustration" aria-hidden="true"><i></i><i></i><i></i></div>
+      <p id="setup-step" class="section-label"></p>
+      <h1 id="setup-title">正在打开研习台</h1>
+      <p id="setup-description" class="muted"></p>
+      <form id="setup-materials" hidden>
+        <label for="setup-directory">本机资料文件夹</label>
+        <input id="setup-directory" placeholder="粘贴文件夹的绝对路径" required autocomplete="off">
+        <button type="submit" class="primary">关联资料</button>
+      </form>
+      <form id="setup-plan" hidden>
+        <label for="setup-instructions">你想学什么？</label>
+        <textarea id="setup-instructions" rows="4" maxlength="12000" required placeholder="例如：我想入门 Agent 开发，每周能投入 6 小时，请参考已关联资料安排两个月的学习计划。"></textarea>
+        <button type="submit" class="primary">生成待确认计划</button>
+      </form>
+      <div id="setup-status" role="status" aria-live="polite"></div>
+      <div id="setup-stream" class="stream-preview" hidden></div>
+      <div id="setup-candidate" hidden></div>
+    </section>
+  </main>
+    <main class="conversation" hidden>
       <header class="main-header"><div><span class="eyebrow">研习台 / 工作区</span><h1 id="chat-title">学习对话</h1><p id="view-caption">提问、核对资料，或讨论你的学习安排。</p></div><button id="refresh" type="button"><span aria-hidden="true">↻</span>刷新状态</button></header>
       <nav class="conversation-tabs" aria-label="当前对话的视图">
         <button class="active" type="button" data-view="all" aria-pressed="true">学习对话</button>
         <button type="button" data-view="plans" aria-pressed="false">计划候选 <span id="nav-pending"></span></button>
         <button type="button" data-view="tasks" aria-pressed="false">任务与反馈</button>
+        <div id="chat-modes" class="chat-modes" role="group" aria-label="回答模式">
+          <button id="deep-mode" type="button" role="switch" aria-label="深入模式" aria-checked="false" aria-describedby="chat-mode-help" disabled>
+            <span class="mode-track" aria-hidden="true"></span><span id="chat-mode-label">快速模式</span>
+          </button>
+          <label id="thinking-option" title="控制深入模式下 Flash 子智能体的执行与正常报告" hidden><input id="worker-thinking" type="checkbox" checked> 思考</label>
+          <span id="chat-mode-help" class="visually-hidden">深入模式可按需由多智能体协作。</span>
+        </div>
       </nav>
       <div id="notice-bar" hidden><div id="notice" role="status" aria-live="polite"></div><button id="dismiss-notice" type="button" aria-label="关闭通知">×</button></div>
       <div id="search-filter" hidden><span id="search-description" role="status"></span><button id="clear-search" type="button" class="text-action">清除筛选</button></div>
@@ -42,7 +70,7 @@
         <span class="muted" id="composer-status" role="status"></span>
       </section>
     </main>
-    <aside class="inspector" aria-label="学习状态与功能" data-mobile-expanded="false">
+    <aside class="inspector" aria-label="学习状态与功能" data-mobile-expanded="false" hidden>
       <header class="inspector-fixed">
         <div class="task-heading">
           <span class="section-label">学习进度</span>

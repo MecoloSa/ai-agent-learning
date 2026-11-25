@@ -11,16 +11,18 @@ from uuid import uuid4
 
 from pydantic import Field
 
+from ai_agent.config import get_settings
 from ai_agent.learning.feedback_runtime import commit_user_task_feedback
 from ai_agent.learning.learning_state import (
     ActivityStatus, LearningState, LearningTask, StateModel, UnderstandingStatus, UserFeedback, update_learning_context,
 )
 from ai_agent.learning.plan_change_request import PlanChangeRequest
-from ai_agent.learning.plan_tasks import apply_task_changes, validate_task_changes
+from ai_agent.learning.plan_tasks import apply_task_changes, validate_split_changes, validate_task_changes
 from ai_agent.learning.task_cancellation import TaskCancellation, cancel_learning_task
 from ai_agent.learning.task_creation import TaskCreationArgs, commit_task_creation, prepare_task_creation
 from ai_agent.learning.workspace_store import (
-    PlanCandidate, Workspace, WorkspaceConflict, WorkspaceConversation, WorkspaceEvent, WorkspaceStore, empty_learning_state,
+    INITIAL_PLAN, PlanCandidate, Workspace, WorkspaceConflict, WorkspaceConversation, WorkspaceEvent, WorkspaceStore,
+    empty_learning_state,
 )
 from ai_agent.persistence.session_materials import resolve_resume_materials
 from ai_agent.resources.materials import iter_material_files, safe_material_path
@@ -38,6 +40,8 @@ class WorkspaceCommand(StateModel):
 
 class ChatInput(StateModel):
     text: str = Field(min_length=1, max_length=12000, strict=True)
+    deep_mode: bool = Field(default=False, strict=True)
+    worker_thinking: bool = Field(default=True, strict=True)
 
 
 class CandidateSelection(StateModel):
@@ -83,6 +87,13 @@ def _task_deltas(before: LearningState, after: LearningState) -> tuple[dict, ...
     return tuple(deltas)
 
 
+def setup_stage(state: LearningState) -> Literal["materials", "plan", "ready"]:
+    binding = state.material_binding
+    if binding is None or not Path(binding.root_dir).is_dir():
+        return "materials"
+    return "plan" if state.plan_markdown.strip() == INITIAL_PLAN else "ready"
+
+
 def workspace_view(workspace: Workspace, conversation_id: str | None = None) -> dict:
     """Return display data without local paths, archive IDs or storage internals."""
     if conversation_id is None and workspace.original_deleted:
@@ -109,13 +120,18 @@ def workspace_view(workspace: Workspace, conversation_id: str | None = None) -> 
         proposals.append(item)
     memory = state.conversation_memory
     binding = state.material_binding
+    materials_available = bool(binding and Path(binding.root_dir).is_dir())
+    stage = setup_stage(state)
     return {
         "version": workspace.version,
         "conversation_id": conversation_id,
         "materials": {
             "folder": Path(binding.root_dir).name if binding else None,
-            "available": bool(binding and Path(binding.root_dir).is_dir()),
+            "available": materials_available,
         },
+        "setup_stage": stage,
+        "needs_initial_plan": state.plan_markdown.strip() == INITIAL_PLAN,
+        "deep_mode_available": stage == "ready" and materials_available and get_settings().interactive_task_delegation_enabled,
         "state": state.model_dump(mode="json", exclude={"material_binding", "conversation_memory"}),
         "proposals": proposals,
         "conversations": ([{"id": None, "title": workspace.original_title}] if not workspace.original_deleted else []) + [
@@ -140,10 +156,28 @@ class WorkspaceService:
             raise ValueError("请先关联可访问的本地资料目录。")
         return json.loads(build_list_material_files_tool(binding.root_dir).invoke({"offset": offset}))
 
-    def execute(self, command: WorkspaceCommand, *, stream_observer=None) -> WorkspaceEvent:
+    @staticmethod
+    def _validate_setup_action(scoped: Workspace, command: WorkspaceCommand) -> None:
+        stage = setup_stage(scoped.state)
+        if stage == "ready" or command.action in {"bind_materials", "new_conversation", "rename_conversation", "delete_conversation"}:
+            return
+        if stage == "materials":
+            raise ValueError("请先关联可访问的本地资料，再生成首份学习计划。")
+        if command.action == "draft" and command.payload.get("mode") == "replace":
+            return
+        if command.action == "decide" and any(
+            candidate.id == command.payload.get("proposal_id") and candidate.mode == "replace"
+            for candidate in scoped.proposals
+        ):
+            return
+        raise ValueError("请先生成并采用首份学习计划，再开始聊天。")
+
+    def execute(self, command: WorkspaceCommand, *, stream_observer=None, enforce_setup=False) -> WorkspaceEvent:
         excluded = {"request_id", "conversation_id"} if command.conversation_id is None else {"request_id"}
         fingerprint = json.dumps(command.model_dump(mode="json", exclude=excluded), sort_keys=True)
         if command.action == "rename_conversation":
+            if enforce_setup:
+                self._validate_setup_action(self.store.load().scope(command.conversation_id), command)
             title = command.payload.get("title")
             if set(command.payload) != {"title"} or not isinstance(title, str) or not 1 <= len(title.strip()) <= 60:
                 raise ValueError("请输入 1 到 60 个字符的标题。")
@@ -155,6 +189,8 @@ class WorkspaceService:
             return previous
         root = self.store.load()
         before = root.scope(command.conversation_id)
+        if enforce_setup:
+            self._validate_setup_action(before, command)
         if command.version != before.version:
             raise WorkspaceConflict("当前学习状态已更新，请核对后再提交。")
 
@@ -350,7 +386,8 @@ class WorkspaceService:
 
     def _generate(self, before: Workspace, command: WorkspaceCommand, stream_observer):
         request = PlanChangeRequest.model_validate(command.payload) if command.action == "draft" else None
-        text = request.instructions if request else ChatInput.model_validate(command.payload).text
+        chat = ChatInput.model_validate(command.payload) if request is None else None
+        text = chat.text if chat is not None else request.instructions
         if request and request.mode == "split_task" and not any(
             task.task_id == request.task_id and not task.is_cancelled for task in before.state.tasks
         ):
@@ -366,30 +403,35 @@ class WorkspaceService:
             state, result = self.draft_turn(generation, text, request)
         else:
             state, result = self._draft_turn(generation, text, request, stream_observer=stream_observer,
-                                            audit_trace=title_audit)
+                                            audit_trace=title_audit, chat=chat)
         if state.model_dump(exclude={"conversation_memory"}) != before.state.model_dump(exclude={"conversation_memory"}):
             raise ValueError("起草过程中发现正式状态变化，已拒绝交付。")
         proposal_id = None
         proposals = before.proposals
         if task_only:
             state = before.state
+        # 生成适配器即使返回候选，也不能绕过入口授权进入待确认记录。
+        if request is None and result.confirmation_plan is not None:
+            raise ValueError("当前为学习对话，请通过“调整计划”发起候选。")
         if result.confirmation_plan is not None:
             changes = result.task_changes
             if task_only:
-                adds = tuple(change for change in changes if change.operation == "add")
+                issue = None
                 if request.mode == "extract_tasks":
+                    adds = tuple(change for change in changes if change.operation == "add")
                     existing = {task.title.casefold() for task in before.state.tasks if not task.is_cancelled}
                     titles = {change.title.casefold() for change in adds}
-                    valid = bool(adds) and len(adds) == len(changes) == len(titles) and not existing & titles
+                    if not adds or len(adds) != len(changes) or len(adds) != len(titles) or existing & titles:
+                        issue = "提取任务只能新增尚未登记的任务。"
                 else:
-                    remaining = tuple(change for change in changes if change.operation != "add")
-                    valid = (len({change.title.casefold() for change in adds}) >= 2
-                             and len(remaining) == 1 and remaining[0].operation == "archive"
-                             and remaining[0].task_id == request.task_id)
-                if not valid:
+                    try:
+                        validate_split_changes(changes, request.task_id)
+                    except ValueError as exc:
+                        issue = str(exc)
+                if issue is not None:
                     return before.model_copy(update={"state": state}), WorkspaceEvent(
                         action="draft", status="not_submitted", input_text=text,
-                        message="本轮未交付符合范围的任务候选，请核对要求后重试。",
+                        message=issue,
                         conversation_id=command.conversation_id)
             if changes:
                 validate_task_changes(before.state, changes)
@@ -441,7 +483,7 @@ class WorkspaceService:
             raise WorkspaceConflict("该候选已经处理，请查看当前结果。")
         adopt = selection.decision == "adopt"
         state = update_learning_context(before.state, plan_markdown=candidate.markdown) if adopt else before.state
-        if adopt and candidate.task_changes:
+        if adopt and (candidate.task_changes or candidate.mode == "split_task"):
             split_from = next((change.task_id for change in candidate.task_changes
                                if change.operation == "archive"), None) if candidate.mode == "split_task" else None
             if candidate.mode == "split_task" and split_from is None:
@@ -498,7 +540,8 @@ class WorkspaceService:
         return after, WorkspaceEvent(action=command.action, status="saved", message=message, input_text=input_text,
                                      task_delta=_task_deltas(before.state, state))
 
-    def _draft_turn(self, workspace: Workspace, text: str, request: PlanChangeRequest | None, *, stream_observer=None, audit_trace=None):
+    def _draft_turn(self, workspace: Workspace, text: str, request: PlanChangeRequest | None, *,
+                    stream_observer=None, audit_trace=None, chat: ChatInput | None = None):
         # Clients are created only in the two model-backed actions.
         from ai_agent import main as app
         from ai_agent.learning.feedback_runtime import LearningActionInbox
@@ -523,6 +566,7 @@ class WorkspaceService:
             retrieval_available=use_rag,
             on_demand_eligible=directory is not None and app._supports_on_demand_materials(directory),
             plan_only=True,
+            allow_plan_proposals=request is not None,
         ) + app.RESUMED_SESSION_RULES
         memory = (ConversationMemory.from_snapshot(prompt, state.conversation_memory)
                   if state.conversation_memory else ConversationMemory(system_prompt=prompt, strategy="window"))
@@ -537,7 +581,10 @@ class WorkspaceService:
             directory, max_queries_per_call=settings.interactive_max_queries_per_tool_call,
             max_context_chars=settings.interactive_retrieval_max_context_chars, structured_result=True,
         ) if use_rag else None
-        extra = [feedback.history_tool, feedback.confirmation_history_tool, plans.tool]
+        extra = [feedback.history_tool, feedback.confirmation_history_tool]
+        # 普通对话可以读取反馈和确认历史，显式起草才绑定候选提交工具。
+        if request is not None:
+            extra.append(plans.tool)
         if directory is not None:
             extra[:0] = [
                 app.build_list_material_files_tool(directory), app.build_read_pdf_pages_tool(directory),
@@ -575,11 +622,19 @@ class WorkspaceService:
         model_role = {}
         if request is not None:
             model_role = {"role": "workspace_tasks" if task_only else "auxiliary"}
+        elif chat is not None and chat.deep_mode and directory is not None and settings.interactive_task_delegation_enabled:
+            from ai_agent.runtime.task_delegation import build_learning_delegation_tool
+
+            extra.append(build_learning_delegation_tool(
+                directory, text, main_plans=settings.interactive_main_plans_delegation,
+                worker_thinking=chat.worker_thinking,
+            ))
         reply = app._invoke_interactive_turn(
             request_messages=messages, user_input=text, plain_llm=app.create_llm(**model_role),
             tool_llm=app.create_llm_with_tools([tool for tool in (retrieval, read, *extra) if tool is not None],
                                              **model_role),
-            retrieval_tool=retrieval, read_tool=read, extra_tools=tuple(extra), plan_inbox=plans,
+            retrieval_tool=retrieval, read_tool=read, extra_tools=tuple(extra),
+            plan_inbox=plans if request is not None else None,
             stream_observer=stream_observer,
             audit_trace=audit_trace,
         )

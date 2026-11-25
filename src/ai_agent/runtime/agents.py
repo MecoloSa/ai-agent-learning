@@ -287,19 +287,19 @@ def _build_analysis_budget_status(
     if remaining_total == 0:
         notices.append(
             "工具总额度已用完，不要再请求工具；"
-            "请依据已有证据回答，明确不足之处。"
+            "请依据已有证据回答。"
         )
     elif remaining_total == 1:
         notices.append(
             "所有工具合计最多还可执行1次，"
-            "请优先补足最关键的证据缺口。"
+            "如需补证，优先补足最关键的缺口。"
         )
     # 工具额度未耗尽，也可能先达到模型轮数上限。
     # 明确告知：最后一轮调用工具后，不会额外赠送一次模型收尾。
     if remaining_model_rounds == 1:
         notices.append(
             "本轮是最后一次模型决策；调用工具后没有下一轮生成分析。"
-            "请依据已有证据作答，并明确不足之处。"
+            "请依据已有证据作答。"
         )
 
     return {
@@ -781,8 +781,7 @@ def analyse_materials(material_dir: str, learning_goal: str) -> tuple[str, str]:
             "4. 核心内容：概念、作用和与目标相关的学习难点。\n"
             "5. 学习活动依据：区分资料原有活动与自行提出的学习建议。\n"
             "6. 推荐顺序：依据已有依赖和用户目标，不编造必须先学的关系。\n"
-            "7. 证据覆盖与不足：区分本次未覆盖、本地缺少外部资源和资料明确不覆盖。\n"
-            "缺口仅限与学习目标相关的内容，不为填满结构引入无关领域。"
+            "7. 证据覆盖：有影响学习目标的限制时，区分本次未覆盖、本地缺少外部资源和资料明确不覆盖。"
         )),
         HumanMessage(content=f"学习目标：{learning_goal}\n\n{context}"),
     ]
@@ -834,7 +833,7 @@ def analyse_materials_agentic(material_dir:str, learning_goal:str) -> tuple[str,
             "PDF或非源码跨文件问题用retrieve_learning_context；源码可用search_learning_files定位。"
             "查询只覆盖当前必要缺口，合并近义问题；互补且独立的查询可批量提交，"
             "依赖前次结果的查询分步决定。neighbor_window=0只取命中块，1补相邻块。"
-            "证据充分时停止调用工具，输出资料定位、知识结构、依赖、学习顺序与证据缺口。"
+            "证据充分时停止调用工具，输出资料定位、知识结构、依赖与学习顺序。"
             "本阶段不生成按天或按周计划。\n"
             f"{LEARNING_ACTIVITY_RULES}{EVIDENCE_RULES}"
         )),
@@ -1216,7 +1215,7 @@ def create_study_plan(
         "query应明确所需资料信息，不能只要求生成计划；不重复已有查询。"
         "证据充分就直接生成计划。\n"
         if retrieval_tool is not None else
-        "当前未启用检索工具；依据已有证据制定计划，缺口如实说明。\n"
+        "当前未启用检索工具，依据已有证据制定计划。\n"
     )
 
     messages = [

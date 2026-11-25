@@ -23,7 +23,7 @@ from ai_agent.resources.materials import (
     read_material_excerpt,
 )
 from ai_agent.config import get_settings
-from ai_agent.resources.pdf_materials import read_pdf_pages
+from ai_agent.resources.pdf_materials import MAX_READ_PDF_PAGES, PdfInvalidPageRange, PdfPageOutOfBounds, read_pdf_pages
 
 settings = get_settings()
 
@@ -128,6 +128,9 @@ def build_retrieve_learning_context_tool(
     evidence_blocks: list[str] | None = None,
     acquisition_facts: list[dict] | None = None,
     structured_result: bool = False,
+    source_paths: frozenset[str] | None = None,
+    strategy: str | None = None,
+    rerank: bool | None = None,
 ) -> BaseTool:
     """创建一个绑定资料目录的多query语义检索工具。
 
@@ -281,6 +284,9 @@ def build_retrieve_learning_context_tool(
             relative_margin=settings.rag_relative_margin,
             min_hits=settings.rag_min_hits_per_query,
             exclude_suffixes={".py"},
+            **({"source_paths": source_paths} if source_paths is not None else {}),
+            **({"strategy": strategy} if strategy is not None else {}),
+            **({"rerank": rerank} if rerank is not None else {}),
         )
 
         if not hits:
@@ -374,6 +380,8 @@ def build_retrieve_learning_context_tool(
             "text": display_text,
             "sources": formatting_trace.get("selected_sources", []),
         }
+        if source_paths is not None:
+            data["locations"] = formatting_trace.get("selected_locations", [])
         # 正常路径不重复报告零值；内部格式化统计仍保留完整计数。
         omitted_blocks = formatting_trace.get("omitted_blocks", 0)
         if omitted_blocks > 0:
@@ -725,12 +733,16 @@ def build_read_pdf_pages_tool(root_dir: str) -> BaseTool:
         不支持OCR、加密PDF，不保证图片、表格和公式信息完整。
         """
         # 模型只决定相对路径与页码；目录、边界和输出限制由程序控制。
-        data = read_pdf_pages(
-            resolved_root,
-            relative_path,
-            start_page,
-            end_page,
-        )
+        try:
+            data = read_pdf_pages(resolved_root, relative_path, start_page, end_page)
+        except PdfInvalidPageRange as exc:
+            return json.dumps({"ok": False, "error": {
+                "code": exc.code, "message": str(exc), "requested_start_page": start_page,
+                "requested_end_page": end_page, "max_pages": MAX_READ_PDF_PAGES,
+                "retryable": False,
+            }}, ensure_ascii=False)
+        except PdfPageOutOfBounds as exc:
+            return json.dumps({"ok": False, "error": exc.to_error()}, ensure_ascii=False)
 
         # 引用已由底层函数按实际页序号生成，不让模型补造chunk。
         # 即便无文字，读取尝试也可能成功；回答必须解释no_text限制。

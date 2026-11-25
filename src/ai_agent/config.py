@@ -168,6 +168,8 @@ class Settings:
     history_semantic_min_similarity: float | None = None
     # 连续失败、拒绝或复用旧结果的上限；独立于整轮工具预算。
     interactive_max_no_progress_calls: int = 4
+    interactive_task_delegation_enabled: bool = True
+    interactive_main_plans_delegation: bool = False
 
 
 @lru_cache(maxsize=1)
@@ -285,6 +287,8 @@ def get_settings() -> Settings:
         interactive_max_no_progress_calls=_env_int(
             "INTERACTIVE_MAX_NO_PROGRESS_CALLS", 4, minimum=1,
         ),
+        interactive_task_delegation_enabled=_env_bool("INTERACTIVE_TASK_DELEGATION_ENABLED", True),
+        interactive_main_plans_delegation=_env_bool("INTERACTIVE_MAIN_PLANS_DELEGATION", False),
         history_retrieval_strategy=os.getenv(
             "HISTORY_RETRIEVAL_STRATEGY", "bm25"
         ).strip().lower(),

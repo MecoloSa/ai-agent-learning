@@ -80,7 +80,9 @@ def _structured_result_succeeded(result: str) -> bool:
 _SUCCESS_CHECKERS: dict[str, Callable[[str], bool]] = {
     "read_material_lines": _structured_result_succeeded,
     "list_material_files": _structured_result_succeeded,
+    "inspect_document_structure": _structured_result_succeeded,
     "read_pdf_pages": _structured_result_succeeded,
+    "delegate_learning_task": _structured_result_succeeded,
     "read_feedback_history": _structured_result_succeeded,
     "read_confirmation_history": _structured_result_succeeded,
     "list_conversation_sources": _structured_result_succeeded,
@@ -97,7 +99,7 @@ _SUCCESS_CHECKERS: dict[str, Callable[[str], bool]] = {
 
 def execution_failure_reason(tool_name: str, result: str) -> str | None:
     """只解释已知工具的结构化错误码，不展示外部错误正文。"""
-    if tool_name != "read_conversation_turn":
+    if tool_name not in {"read_conversation_turn", "read_pdf_pages"}:
         return None
     try:
         payload = json.loads(result)
@@ -109,6 +111,12 @@ def execution_failure_reason(tool_name: str, result: str) -> str | None:
     if not isinstance(error, dict) or not isinstance(error.get("code"), str):
         return None
     # 文案由程序固定；工具message或模型回答可能包含路径、原文或指令，不能直接拼接。
+    if tool_name == "read_pdf_pages":
+        return {
+            "pdf_invalid_page_range": "物理起止页无效，请检查页码和顺序。",
+            "pdf_page_range_limit": "请求页数超过单次上限，请缩小范围。",
+            "pdf_page_out_of_bounds": "起始物理页超出 PDF 实际页数。",
+        }.get(error["code"])
     reasons = {
         "turn_out_of_scope": "请求轮次超过当前快照关联上限，本次未取得该轮原文。请使用已关联该轮的快照，或由你提供原话。",
         "source_out_of_scope": "请求来源不在本轮允许范围，请先查看当前已关联的历史来源。",

@@ -25,6 +25,32 @@ MAX_READ_PDF_PAGES = 3
 MAX_READ_PDF_TEXT_CHARS = 8_000
 
 
+class PdfInvalidPageRange(ValueError):
+    """Invalid arguments rejected before loading the PDF."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+class PdfPageOutOfBounds(ValueError):
+    """请求的起始物理页超过已读取的文档页数。"""
+
+    def __init__(self, start_page: int, total_pages: int):
+        super().__init__("起始页超出PDF范围")
+        self.start_page = start_page
+        self.total_pages = total_pages
+
+    def to_error(self) -> dict[str, object]:
+        return {
+            "code": "pdf_page_out_of_bounds",
+            "message": str(self),
+            "requested_start_page": self.start_page,
+            "total_pages": self.total_pages,
+            "retryable": False,
+        }
+
+
 def read_pdf_pages(
     root_dir: str,
     relative_path: str,
@@ -34,13 +60,14 @@ def read_pdf_pages(
     """读取指定物理页的可提取文字，包含起止两端。"""
     # bool也是int的子类，因此用type检查拒绝True等非页码输入。
     if type(start_page) is not int or type(end_page) is not int:
-        raise ValueError("起止页必须是整数")
+        raise PdfInvalidPageRange("pdf_invalid_page_range", "起止页必须是整数")
 
     if start_page < 1 or end_page < start_page:
-        raise ValueError("页码必须满足1 <= start_page <= end_page")
+        raise PdfInvalidPageRange("pdf_invalid_page_range", "页码必须满足1 <= start_page <= end_page")
 
     if end_page - start_page + 1 > MAX_READ_PDF_PAGES:
-        raise ValueError(
+        raise PdfInvalidPageRange(
+            "pdf_page_range_limit",
             f"单次最多读取{MAX_READ_PDF_PAGES}页"
         )
 
@@ -75,7 +102,7 @@ def read_pdf_pages(
 
         total_pages = len(reader.pages)
         if start_page > total_pages:
-            raise ValueError("起始页超出PDF范围")
+            raise PdfPageOutOfBounds(start_page, total_pages)
 
         page_labels = getattr(reader, "page_labels", None)
         effective_end = min(end_page, total_pages)

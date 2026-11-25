@@ -74,7 +74,7 @@ def main():
              serving(service) as url:
             subprocess.run(["node", str(Path(__file__).with_name("workspace_browser.mjs")),
                             url, str(root), str(args.edge)], check=True, timeout=90)
-        assert len(calls) == 4
+        assert len(calls) == 5
         assert store.load().state.context_revision == 2
         assert len(store.load().state.feedback_records) == 2
         (root / "result.json").write_text(json.dumps({"model_stub_calls": calls, "revision": 2},
@@ -84,7 +84,13 @@ def main():
     audit = {}
     original = app._invoke_interactive_turn
     def traced(**kwargs):
-        return original(**kwargs, audit_trace=audit)
+        # Web now forwards an optional audit_trace itself. Reuse it when supplied.
+        active_audit = kwargs.get("audit_trace")
+        kwargs["audit_trace"] = audit if active_audit is None else active_audit
+        result = original(**kwargs)
+        if active_audit is not None:
+            audit.update(active_audit)
+        return result
 
     with patch.object(app, "_invoke_interactive_turn", traced), serving(service) as url:
         with urlopen(url, timeout=10) as response:

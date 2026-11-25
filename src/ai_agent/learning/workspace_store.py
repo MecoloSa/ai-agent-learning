@@ -53,8 +53,11 @@ class WorkspaceConversation(StateModel):
     version: int = 1
 
 
+INITIAL_PLAN = "尚未制定学习计划。"
+
+
 def empty_learning_state() -> LearningState:
-    return LearningState(learning_goal="待确定学习目标", plan_markdown="尚未制定学习计划。")
+    return LearningState(learning_goal="待确定学习目标", plan_markdown=INITIAL_PLAN)
 
 
 class Workspace(StateModel):
